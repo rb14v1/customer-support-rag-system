@@ -58,7 +58,12 @@ class APIEndpointsTestCase(APITestCase):
         self.assertIn('sources', response.data)
         self.assertIsInstance(response.data['sources'], list)
         self.assertGreater(len(response.data['sources']), 0)
-        self.assertEqual(response.data['sources'][0]['document'], 'returns_refunds.pdf')
+        first_source = response.data['sources'][0]
+        self.assertEqual(first_source['document'], 'returns_refunds.pdf')
+        self.assertIn('page', first_source)
+        self.assertIn('relevance', first_source)
+        self.assertIn('chunk_id', first_source)
+        self.assertIn('text', first_source)
 
     def test_chat_endpoint_valid_warranty_question(self):
         url = reverse('api-chat')
@@ -69,7 +74,10 @@ class APIEndpointsTestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('answer', response.data)
         self.assertGreater(len(response.data['sources']), 0)
-        self.assertEqual(response.data['sources'][0]['document'], 'warranty_policy.pdf')
+        first_source = response.data['sources'][0]
+        self.assertEqual(first_source['document'], 'warranty_policy.pdf')
+        self.assertIn('chunk_id', first_source)
+        self.assertIn('text', first_source)
 
     def test_chat_endpoint_out_of_domain_question(self):
         url = reverse('api-chat')
@@ -106,3 +114,40 @@ class APIEndpointsTestCase(APITestCase):
         response = self.client.post(url, payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('error', response.data)
+
+    def test_document_source_endpoint_valid_pdf(self):
+        url = reverse('api-document-source', kwargs={'document_name': 'returns_refunds.pdf'})
+        response = self.client.get(url + '?page=1')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+
+    def test_document_source_endpoint_nonexistent_pdf(self):
+        url = reverse('api-document-source', kwargs={'document_name': 'non_existent_doc_123.pdf'})
+        response = self.client.get(url + '?page=1')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertIn('error', response.data)
+
+    def test_document_source_endpoint_non_pdf_file(self):
+        url = reverse('api-document-source', kwargs={'document_name': 'secret_file.txt'})
+        response = self.client.get(url + '?page=1')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+
+    def test_document_source_endpoint_path_traversal(self):
+        url = reverse('api-document-source', kwargs={'document_name': '.._customer_support_settings.pdf'})
+        response = self.client.get(url + '?page=1')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_document_source_endpoint_invalid_pages(self):
+        url = reverse('api-document-source', kwargs={'document_name': 'returns_refunds.pdf'})
+        # Page 0
+        r0 = self.client.get(url + '?page=0')
+        self.assertEqual(r0.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Negative page
+        r_neg = self.client.get(url + '?page=-5')
+        self.assertEqual(r_neg.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Page exceeding total page count
+        r_exceed = self.client.get(url + '?page=999')
+        self.assertEqual(r_exceed.status_code, status.HTTP_400_BAD_REQUEST)

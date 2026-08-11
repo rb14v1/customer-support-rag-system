@@ -134,7 +134,7 @@ class ChatView(APIView):
     """
     POST /api/chat/ - Primary customer support QA endpoint.
     Request: {"question": "What is the return policy?"}
-    Response: {"answer": "...", "sources": [{"document": "...", "page": 1, "relevance": 0.91}]}
+    Response: {"answer": "...", "sources": [{"document": "...", "page": 1, "relevance": 0.91, "chunk_id": "...", "text": "..."}]}
     """
 
     def post(self, request):
@@ -166,3 +166,99 @@ class ChatView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+
+from django.http import FileResponse
+import pypdf
+
+
+class DocumentSourceView(APIView):
+    """
+    GET /api/documents/<document_name>/source/?page=1
+    Serves requested PDF file securely from settings.DATA_DIR.
+    Validates file type, page existence, and prevents path traversal attacks.
+    """
+
+    def get(self, request, document_name):
+        logger.info("GET /api/documents/%s/source/ requested", document_name)
+
+        # 1. Reject path traversal, directory separators, and parent references
+        if not document_name or "/" in document_name or "\\" in document_name or ".." in document_name:
+            logger.warning("Path traversal attempt blocked: %s", document_name)
+            return Response(
+                {"error": "Invalid document name. Path traversal is strictly prohibited."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 2. Only allow .pdf extension
+        if not document_name.lower().endswith(".pdf"):
+            logger.warning("Non-PDF document requested: %s", document_name)
+            return Response(
+                {"error": "Invalid file type. Only PDF documents can be accessed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 3. Locate file inside settings.DATA_DIR
+        data_dir = Path(getattr(settings, "DATA_DIR", Path(settings.BASE_DIR) / "data")).resolve()
+        file_path = (data_dir / document_name).resolve()
+
+        # Containment check
+        try:
+            file_path.relative_to(data_dir)
+        except ValueError:
+            logger.warning("File outside DATA_DIR requested: %s", document_name)
+            return Response(
+                {"error": "Access denied."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not file_path.is_file():
+            logger.warning("Requested document not found: %s", document_name)
+            return Response(
+                {"error": f"Document '{document_name}' not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # 4. Validate page number parameter
+        page_param = request.query_params.get("page", 1)
+        try:
+            page_num = int(page_param)
+        except (ValueError, TypeError):
+            logger.warning("Invalid page parameter: %s", page_param)
+            return Response(
+                {"error": "Page number must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if page_num < 1:
+            logger.warning("Page number < 1 requested: %d", page_num)
+            return Response(
+                {"error": "Page number must be a positive integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            reader = pypdf.PdfReader(str(file_path))
+            total_pages = len(reader.pages)
+            if page_num > total_pages:
+                logger.warning("Page number %d exceeds total pages %d in %s", page_num, total_pages, document_name)
+                return Response(
+                    {"error": f"Page number {page_num} exceeds document total pages ({total_pages})."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        except Exception as e:
+            logger.exception("Error validating PDF page count for %s: %s", document_name, str(e))
+            return Response(
+                {"error": "Error inspecting PDF document."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        try:
+            response = FileResponse(open(file_path, "rb"), content_type="application/pdf")
+            response["Content-Disposition"] = f'inline; filename="{document_name}"'
+            return response
+        except Exception as e:
+            logger.exception("Error serving PDF file %s: %s", document_name, str(e))
+            return Response(
+                {"error": "Unable to serve PDF document."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )

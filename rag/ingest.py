@@ -174,4 +174,3 @@ class IngestionPipeline:
             "total_chunks": stats.get("total_chunks", 0),
             "documents": processed_docs,
         }
-

@@ -177,7 +177,7 @@ class MockVectorStoreProvider(AbstractVectorStoreProvider):
     def index_chunks(self, chunks: List[DocumentChunk]) -> int:
         if not chunks:
             return 0
-        
+
         logger.info("Indexing %d document chunks in MockVectorStoreProvider", len(chunks))
         try:
             existing_map = {chunk.chunk_id: idx for idx, chunk in enumerate(self.chunks)}
@@ -319,4 +319,3 @@ class ProviderRegistry:
         cls._embedding_provider = None
         cls._vector_store_provider = None
         cls._llm_provider = None
-

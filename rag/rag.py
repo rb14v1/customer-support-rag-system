@@ -179,6 +179,8 @@ class RAGPipeline:
                     "document": res.document_name,
                     "page": res.page_number,
                     "relevance": round(float(res.relevance), 2),
+                    "chunk_id": res.chunk_id,
+                    "text": res.text,
                 })
 
             logger.info("Successfully synthesized answer with %d source citation(s)", len(sources))
@@ -189,5 +191,3 @@ class RAGPipeline:
         except Exception as e:
             logger.exception("Unexpected error in RAGPipeline.ask for query '%s': %s", question_clean, str(e))
             raise
-
-

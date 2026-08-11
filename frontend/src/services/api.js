@@ -24,7 +24,7 @@ async function request(endpoint, options = {}) {
 
   try {
     const response = await fetch(url, config);
-    
+
     if (!response.ok) {
       let errorMessage = `HTTP Error ${response.status}`;
       try {
@@ -94,4 +94,14 @@ export async function sendChatMessage(question) {
     method: 'POST',
     body: JSON.stringify({ question: question.trim() }),
   });
+}
+
+/**
+ * Constructs the source document URL for a cited PDF document and page number.
+ * GET /api/documents/<document_name>/source/?page=<page>#page=<page>
+ */
+export function getDocumentSourceUrl(documentName, page = 1) {
+  const safeDocName = encodeURIComponent(documentName);
+  const pageNum = parseInt(page, 10) || 1;
+  return `${API_BASE_URL}/api/documents/${safeDocName}/source/?page=${pageNum}#page=${pageNum}`;
 }

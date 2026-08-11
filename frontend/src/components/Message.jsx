@@ -1,4 +1,5 @@
 import React from 'react';
+import { getDocumentSourceUrl } from '../services/api';
 
 /**
  * Message component rendering user or assistant chat bubbles, timestamps, and retrieved sources.
@@ -12,6 +13,13 @@ export default function Message({ message }) {
       return `${pct}%`;
     }
     return 'N/A';
+  };
+
+  const truncateExcerpt = (text, maxLength = 120) => {
+    if (!text) return '';
+    const cleanText = text.replace(/\s+/g, ' ').trim();
+    if (cleanText.length <= maxLength) return cleanText;
+    return cleanText.slice(0, maxLength).trim() + '...';
   };
 
   return (
@@ -51,17 +59,38 @@ export default function Message({ message }) {
             </div>
 
             <div className="sources-list">
-              {message.sources.map((src, index) => (
-                <div key={index} className="source-card">
-                  <div className="source-doc-name" title={src.document}>
-                    {src.document}
+              {message.sources.map((src, index) => {
+                const sourceUrl = getDocumentSourceUrl(src.document, src.page);
+                const excerpt = truncateExcerpt(src.text);
+                return (
+                  <div key={index} className="source-card">
+                    <div className="source-card-header">
+                      <span className="source-icon">📄</span>
+                      <span className="source-doc-name" title={src.document}>
+                        {src.document}
+                      </span>
+                    </div>
+                    <div className="source-meta">
+                      <span className="source-page">Page {src.page}</span>
+                      <span className="source-relevance">Relevance: {formatRelevance(src.relevance)}</span>
+                    </div>
+                    {excerpt && (
+                      <div className="source-excerpt" title={src.text}>
+                        "{excerpt}"
+                      </div>
+                    )}
+                    <a
+                      href={sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="view-source-btn"
+                      title={`Open ${src.document} at page ${src.page}`}
+                    >
+                      View source ↗
+                    </a>
                   </div>
-                  <div className="source-meta">
-                    <span className="source-page">Page {src.page}</span>
-                    <span className="source-relevance">Relevance: {formatRelevance(src.relevance)}</span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
