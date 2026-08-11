@@ -210,3 +210,21 @@ class RAGPipelineTestCase(TestCase):
             result = rag.ask("What is the return policy?")
             self.assertEqual(result["sources"], [])
             self.assertEqual(result["answer"], FALLBACK_RESPONSE_TEXT)
+
+    def test_provider_registry_type_checking(self):
+        with self.assertRaises(TypeError):
+            ProviderRegistry.set_embedding_provider("invalid_provider")
+        with self.assertRaises(TypeError):
+            ProviderRegistry.set_vector_store_provider("invalid_provider")
+        with self.assertRaises(TypeError):
+            ProviderRegistry.set_llm_provider("invalid_provider")
+
+    def test_pdf_extractor_non_existent_file(self):
+        with self.assertRaises(FileNotFoundError):
+            PDFExtractor.extract_pages(Path("non_existent_file.pdf"))
+
+    def test_chunker_invalid_parameters(self):
+        with self.assertRaises(ValueError):
+            DocumentChunker(chunk_size=0)
+        with self.assertRaises(ValueError):
+            DocumentChunker(chunk_size=100, chunk_overlap=150)

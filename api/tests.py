@@ -98,3 +98,11 @@ class APIEndpointsTestCase(APITestCase):
         }
         response = self.client.post(url, payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+
+    def test_ingest_endpoint_nonexistent_directory(self):
+        url = reverse('api-ingest')
+        payload = {"data_dir": "non_existent_folder_xyz_123"}
+        response = self.client.post(url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)

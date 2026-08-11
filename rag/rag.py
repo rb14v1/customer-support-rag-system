@@ -3,6 +3,7 @@ RAG Application Logic & Orchestration Module.
 Constructs prompts, interfaces with LLM providers, and applies threshold filtering on retrieval relevance scores.
 """
 
+import logging
 from typing import Any, Dict, List, Optional
 from rag.retrieve import (
     AbstractLLMProvider,
@@ -10,6 +11,8 @@ from rag.retrieve import (
     ProviderRegistry,
     SearchResult,
 )
+
+logger = logging.getLogger(__name__)
 
 try:
     from django.conf import settings
@@ -29,6 +32,7 @@ class PromptBuilder:
     @staticmethod
     def build_prompt(query: str, search_results: List[SearchResult]) -> str:
         if not search_results:
+            logger.info("PromptBuilder received empty search_results for query: '%s'", query)
             return f"User Question: {query}\n\nNo relevant context was found in the knowledge base."
 
         context_blocks = []
@@ -58,6 +62,7 @@ class MockLLMProvider(AbstractLLMProvider):
 
     def generate_response(self, prompt: str, search_results: List[SearchResult]) -> str:
         if not search_results:
+            logger.info("MockLLMProvider returning fallback text due to empty search_results")
             return FALLBACK_RESPONSE_TEXT
 
         top_result = search_results[0]
@@ -110,8 +115,8 @@ class RAGPipeline:
         if settings and hasattr(settings, "RAG_MIN_RELEVANCE_SCORE"):
             try:
                 return float(getattr(settings, "RAG_MIN_RELEVANCE_SCORE"))
-            except (ValueError, TypeError):
-                pass
+            except (ValueError, TypeError) as e:
+                logger.warning("Failed to parse RAG_MIN_RELEVANCE_SCORE from settings: %s", str(e))
         return DEFAULT_FALLBACK_MIN_RELEVANCE_SCORE
 
     def ask(self, question: str, top_k: int = 3, min_relevance_score: Optional[float] = None) -> Dict[str, Any]:
@@ -130,47 +135,59 @@ class RAGPipeline:
             ]
         }
         """
-        question_clean = question.strip()
-        if not question_clean:
+        if not question or not isinstance(question, str) or not question.strip():
+            logger.warning("RAGPipeline received empty or non-string question")
             return {
                 "answer": "Please provide a non-empty question.",
                 "sources": [],
             }
 
+        question_clean = question.strip()
         effective_threshold = (
             min_relevance_score if min_relevance_score is not None else self.get_min_relevance_score()
         )
 
-        # 1. Retrieve top-k context chunks
-        raw_results = self.vector_store.search(question_clean, top_k=top_k)
+        logger.info("Processing RAG query: '%s' (top_k=%d, threshold=%.2f)", question_clean, top_k, effective_threshold)
 
-        # 2. Filter results by minimum relevance score threshold
-        filtered_results = [res for res in raw_results if res.relevance >= effective_threshold]
+        try:
+            # 1. Retrieve top-k context chunks
+            raw_results = self.vector_store.search(question_clean, top_k=top_k)
+            logger.info("Raw vector search returned %d candidates", len(raw_results))
 
-        # 3. Grounded fallback response if no results pass threshold
-        if not filtered_results:
+            # 2. Filter results by minimum relevance score threshold
+            filtered_results = [res for res in raw_results if res.relevance >= effective_threshold]
+            logger.info("Filtered search returned %d candidates passing threshold %.2f", len(filtered_results), effective_threshold)
+
+            # 3. Grounded fallback response if no results pass threshold
+            if not filtered_results:
+                logger.info("No candidates passed relevance threshold %.2f. Returning fallback response.", effective_threshold)
+                return {
+                    "answer": FALLBACK_RESPONSE_TEXT,
+                    "sources": [],
+                }
+
+            # 4. Build system/user prompt with filtered results only
+            prompt = PromptBuilder.build_prompt(question_clean, filtered_results)
+
+            # 5. Generate LLM response using filtered results
+            answer = self.llm_provider.generate_response(prompt, filtered_results)
+
+            # 6. Format sources metadata using filtered results only
+            sources = []
+            for res in filtered_results:
+                sources.append({
+                    "document": res.document_name,
+                    "page": res.page_number,
+                    "relevance": round(float(res.relevance), 2),
+                })
+
+            logger.info("Successfully synthesized answer with %d source citation(s)", len(sources))
             return {
-                "answer": FALLBACK_RESPONSE_TEXT,
-                "sources": [],
+                "answer": answer,
+                "sources": sources,
             }
+        except Exception as e:
+            logger.exception("Unexpected error in RAGPipeline.ask for query '%s': %s", question_clean, str(e))
+            raise
 
-        # 4. Build system/user prompt with filtered results only
-        prompt = PromptBuilder.build_prompt(question_clean, filtered_results)
-
-        # 5. Generate LLM response using filtered results
-        answer = self.llm_provider.generate_response(prompt, filtered_results)
-
-        # 6. Format sources metadata using filtered results only
-        sources = []
-        for res in filtered_results:
-            sources.append({
-                "document": res.document_name,
-                "page": res.page_number,
-                "relevance": round(float(res.relevance), 2),
-            })
-
-        return {
-            "answer": answer,
-            "sources": sources,
-        }
 
