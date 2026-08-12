@@ -60,7 +60,7 @@ export default function Message({ message }) {
 
             <div className="sources-list">
               {message.sources.map((src, index) => {
-                const sourceUrl = getDocumentSourceUrl(src.document, src.page);
+                const sourceUrl = src.url ? (src.url.startsWith('http') ? src.url : `${import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'}${src.url}`) : getDocumentSourceUrl(src.document, src.page);
                 const excerpt = truncateExcerpt(src.text);
                 return (
                   <div key={index} className="source-card">

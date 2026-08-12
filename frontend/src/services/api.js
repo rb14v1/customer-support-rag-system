@@ -97,7 +97,7 @@ export async function sendChatMessage(question) {
 }
 
 /**
- * Constructs the source document URL for a cited PDF document and page number.
+ * Constructs the source document URL for a cited PDF document opening to the specified page number.
  * GET /api/documents/<document_name>/source/?page=<page>#page=<page>
  */
 export function getDocumentSourceUrl(documentName, page = 1) {
