@@ -137,6 +137,17 @@ class IngestionPipeline:
         path = Path(pdf_path)
         logger.info("Starting ingestion of PDF: %s", path.name)
         try:
+            if os.getenv("AZURE_STORAGE_CONNECTION_STRING"):
+                try:
+                    from azure_services.azure_config import get_blob_container_client
+                    from azure_services.blob_service import upload_blob
+
+                    container_client = get_blob_container_client()
+                    upload_blob(container_client, str(path), path.name)
+                    logger.info("Uploaded %s to Azure Blob Storage container", path.name)
+                except Exception as blob_err:
+                    logger.warning("Failed to upload %s to Azure Blob Storage: %s", path.name, str(blob_err))
+
             pages = PDFExtractor.extract_pages(path)
             chunks = self.chunker.chunk_document(path.name, pages)
             if chunks:

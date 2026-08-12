@@ -12,6 +12,10 @@ from typing import Any, Dict, List, Optional
 import zlib
 import numpy as np
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 
@@ -263,10 +267,214 @@ class MockVectorStoreProvider(AbstractVectorStoreProvider):
         self.embeddings.clear()
 
 
+class AzureOpenAIEmbeddingProvider(AbstractEmbeddingProvider):
+    """
+    Azure OpenAI implementation of AbstractEmbeddingProvider.
+    Uses Azure OpenAI text embedding models (e.g., text-embedding-3-small).
+    """
+
+    def __init__(self, client=None, deployment_name: Optional[str] = None):
+        from azure_services.azure_config import (
+            get_openai_client,
+            AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
+        )
+
+        self.client = client or get_openai_client()
+        self.deployment_name = (
+            deployment_name
+            or AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+            or "text-embedding-3-small"
+        )
+        self.dim = 1536
+
+    def embed_text(self, text: str) -> List[float]:
+        if not text or not text.strip():
+            return []
+        try:
+            response = self.client.embeddings.create(
+                input=[text.strip()],
+                model=self.deployment_name,
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            logger.exception("Error generating Azure OpenAI embedding: %s", str(e))
+            raise
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        if not isinstance(texts, list):
+            raise TypeError("texts must be a list of strings.")
+        if not texts:
+            return []
+        cleaned_texts = [t.strip() if t and t.strip() else " " for t in texts]
+        try:
+            batch_size = 100
+            all_embeddings = []
+            for i in range(0, len(cleaned_texts), batch_size):
+                batch = cleaned_texts[i : i + batch_size]
+                response = self.client.embeddings.create(
+                    input=batch,
+                    model=self.deployment_name,
+                )
+                all_embeddings.extend([item.embedding for item in response.data])
+            return all_embeddings
+        except Exception as e:
+            logger.exception("Error generating Azure OpenAI embedding batch: %s", str(e))
+            raise
+
+
+class AzureAISearchVectorStoreProvider(AbstractVectorStoreProvider):
+    """
+    Azure AI Search implementation of AbstractVectorStoreProvider.
+    Handles chunk indexing, vector search, and index statistics via Azure AI Search SDK.
+    """
+
+    def __init__(
+        self,
+        search_client=None,
+        embedding_provider: Optional[AbstractEmbeddingProvider] = None,
+    ):
+        from azure_services.azure_config import (
+            AZURE_SEARCH_API_KEY,
+            AZURE_SEARCH_ENDPOINT,
+            AZURE_SEARCH_INDEX_NAME,
+            get_search_client,
+        )
+        from azure_services.search_service import ensure_search_index
+
+        self.embedding_provider = (
+            embedding_provider or ProviderRegistry.get_embedding_provider()
+        )
+        self.search_client = search_client or get_search_client()
+        self._index_name = AZURE_SEARCH_INDEX_NAME
+        self._endpoint = AZURE_SEARCH_ENDPOINT
+        self._key = AZURE_SEARCH_API_KEY
+
+        if self._endpoint and self._key and self._index_name:
+            try:
+                ensure_search_index(
+                    endpoint=self._endpoint,
+                    key=self._key,
+                    index_name=self._index_name,
+                    embedding_dim=getattr(self.embedding_provider, "dim", 1536),
+                )
+            except Exception as e:
+                logger.warning("Could not auto-create Azure Search index during init: %s", str(e))
+
+    def _sanitize_chunk_id(self, raw_id: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9_\-=]", "_", raw_id)
+
+    def index_chunks(self, chunks: List[DocumentChunk]) -> int:
+        if not chunks:
+            return 0
+
+        logger.info("Indexing %d document chunks into Azure AI Search", len(chunks))
+        try:
+            from azure_services.search_service import upload_documents
+
+            texts = [c.text for c in chunks]
+            embeddings = self.embedding_provider.embed_batch(texts)
+
+            documents = []
+            for chunk, emb in zip(chunks, embeddings):
+                safe_id = self._sanitize_chunk_id(chunk.chunk_id)
+                doc = {
+                    "id": safe_id,
+                    "content": chunk.text,
+                    "document_name": chunk.document_name,
+                    "page_number": int(chunk.page_number),
+                    "vector": emb,
+                }
+                documents.append(doc)
+
+            upload_documents(self.search_client, documents)
+            logger.info("Successfully indexed %d chunks in Azure AI Search", len(documents))
+            return len(documents)
+        except Exception as e:
+            logger.exception("Failed to index chunks in AzureAISearchVectorStoreProvider: %s", str(e))
+            raise RuntimeError(f"Azure Search indexing failed: {str(e)}") from e
+
+    def search(self, query: str, top_k: int = 3) -> List[SearchResult]:
+        if not query or not query.strip():
+            return []
+
+        logger.info("Executing Azure AI Search hybrid/vector search for: '%s'", query)
+        try:
+            from azure_services.search_service import search_documents
+
+            query_vec = self.embedding_provider.embed_text(query)
+            raw_docs = search_documents(
+                search_client=self.search_client,
+                query=query,
+                query_vector=query_vec if query_vec else None,
+                top=top_k,
+            )
+
+            results: List[SearchResult] = []
+            for doc in raw_docs:
+                raw_score = float(doc.get("@search.score", 0.0))
+                # Azure Search hybrid RRF score max is ~0.0333 for top rank
+                if raw_score <= 0.05:
+                    normalized_score = min(1.0, raw_score / 0.0333)
+                else:
+                    normalized_score = min(1.0, raw_score)
+
+                results.append(
+                    SearchResult(
+                        chunk_id=doc.get("id", ""),
+                        text=doc.get("content", ""),
+                        document_name=doc.get("document_name", ""),
+                        page_number=int(doc.get("page_number", 1)),
+                        relevance=normalized_score,
+                        metadata={},
+                    )
+                )
+
+            logger.info("Retrieved %d search results from Azure AI Search", len(results))
+            return results
+        except Exception as e:
+            logger.exception("Failed vector search in AzureAISearchVectorStoreProvider: %s", str(e))
+            raise RuntimeError(f"Azure Search query failed: {str(e)}") from e
+
+    def get_document_stats(self) -> Dict[str, Any]:
+        try:
+            total_chunks = self.search_client.get_document_count()
+            results = self.search_client.search(
+                search_text="*",
+                select=["document_name"],
+                top=1000,
+            )
+            doc_names = sorted(list({doc["document_name"] for doc in results if "document_name" in doc}))
+            return {
+                "total_documents": len(doc_names),
+                "total_chunks": total_chunks,
+                "documents": doc_names,
+            }
+        except Exception as e:
+            logger.warning("Failed to get Azure Search document stats: %s", str(e))
+            return {
+                "total_documents": 0,
+                "total_chunks": 0,
+                "documents": [],
+            }
+
+    def clear(self) -> None:
+        logger.info("Clearing Azure AI Search index documents")
+        try:
+            results = self.search_client.search(search_text="*", select=["id"], top=1000)
+            doc_ids = [d["id"] for d in results if "id" in d]
+            if doc_ids:
+                from azure_services.search_service import delete_documents
+
+                delete_documents(self.search_client, doc_ids)
+                logger.info("Deleted %d document chunks from Azure AI Search", len(doc_ids))
+        except Exception as e:
+            logger.exception("Failed to clear Azure AI Search index: %s", str(e))
+
+
 class ProviderRegistry:
     """
     Central Dependency Injection Registry for RAG providers.
-    Enables Person 2 to inject Azure providers cleanly without changing RAG core.
+    Automatically detects configured Azure credentials and provides Azure services.
     """
 
     _embedding_provider: Optional[AbstractEmbeddingProvider] = None
@@ -276,7 +484,16 @@ class ProviderRegistry:
     @classmethod
     def get_embedding_provider(cls) -> AbstractEmbeddingProvider:
         if cls._embedding_provider is None:
-            cls._embedding_provider = MockEmbeddingProvider()
+            import os
+            if os.getenv("AZURE_OPENAI_ENDPOINT") and os.getenv("AZURE_OPENAI_API_KEY"):
+                try:
+                    logger.info("Initializing AzureOpenAIEmbeddingProvider")
+                    cls._embedding_provider = AzureOpenAIEmbeddingProvider()
+                except Exception as e:
+                    logger.warning("Failed to initialize AzureOpenAIEmbeddingProvider, falling back to Mock: %s", str(e))
+                    cls._embedding_provider = MockEmbeddingProvider()
+            else:
+                cls._embedding_provider = MockEmbeddingProvider()
         return cls._embedding_provider
 
     @classmethod
@@ -289,7 +506,18 @@ class ProviderRegistry:
     @classmethod
     def get_vector_store_provider(cls) -> AbstractVectorStoreProvider:
         if cls._vector_store_provider is None:
-            cls._vector_store_provider = MockVectorStoreProvider(cls.get_embedding_provider())
+            import os
+            if os.getenv("AZURE_SEARCH_ENDPOINT") and os.getenv("AZURE_SEARCH_API_KEY"):
+                try:
+                    logger.info("Initializing AzureAISearchVectorStoreProvider")
+                    cls._vector_store_provider = AzureAISearchVectorStoreProvider(
+                        embedding_provider=cls.get_embedding_provider()
+                    )
+                except Exception as e:
+                    logger.warning("Failed to initialize AzureAISearchVectorStoreProvider, falling back to Mock: %s", str(e))
+                    cls._vector_store_provider = MockVectorStoreProvider(cls.get_embedding_provider())
+            else:
+                cls._vector_store_provider = MockVectorStoreProvider(cls.get_embedding_provider())
         return cls._vector_store_provider
 
     @classmethod
@@ -301,9 +529,20 @@ class ProviderRegistry:
 
     @classmethod
     def get_llm_provider(cls) -> AbstractLLMProvider:
-        from rag.rag import MockLLMProvider
         if cls._llm_provider is None:
-            cls._llm_provider = MockLLMProvider()
+            import os
+            if os.getenv("AZURE_OPENAI_ENDPOINT") and os.getenv("AZURE_OPENAI_API_KEY"):
+                try:
+                    from rag.rag import AzureOpenAILLMProvider
+                    logger.info("Initializing AzureOpenAILLMProvider")
+                    cls._llm_provider = AzureOpenAILLMProvider()
+                except Exception as e:
+                    from rag.rag import MockLLMProvider
+                    logger.warning("Failed to initialize AzureOpenAILLMProvider, falling back to Mock: %s", str(e))
+                    cls._llm_provider = MockLLMProvider()
+            else:
+                from rag.rag import MockLLMProvider
+                cls._llm_provider = MockLLMProvider()
         return cls._llm_provider
 
     @classmethod
@@ -315,7 +554,8 @@ class ProviderRegistry:
 
     @classmethod
     def reset_defaults(cls) -> None:
-        logger.info("Resetting ProviderRegistry to default mock providers")
+        logger.info("Resetting ProviderRegistry to default providers")
         cls._embedding_provider = None
         cls._vector_store_provider = None
         cls._llm_provider = None
+

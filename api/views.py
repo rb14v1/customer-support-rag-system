@@ -156,6 +156,15 @@ class ChatView(APIView):
             rag_pipeline = RAGPipeline()
             result = rag_pipeline.ask(question=question, top_k=top_k)
 
+            # Enrich sources with source URL and page fragment anchor
+            for src in result.get("sources", []):
+                doc_name = src.get("document", "")
+                page_num = src.get("page", 1)
+                if "url" not in src or not src["url"]:
+                    src["url"] = f"/api/documents/{doc_name}/source/?page={page_num}#page={page_num}"
+                if "title" not in src or not src["title"]:
+                    src["title"] = doc_name.replace("_", " ").replace(".pdf", "").title()
+
             resp_serializer = ChatResponseSerializer(data=result)
             resp_serializer.is_valid(raise_exception=True)
             return Response(resp_serializer.data, status=status.HTTP_200_OK)

@@ -26,6 +26,8 @@ class SourceCitationSerializer(serializers.Serializer):
     relevance = serializers.FloatField()
     chunk_id = serializers.CharField(required=False, allow_blank=True, default="")
     text = serializers.CharField(required=False, allow_blank=True, default="")
+    url = serializers.CharField(required=False, allow_blank=True, default="")
+    title = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 class ChatResponseSerializer(serializers.Serializer):
