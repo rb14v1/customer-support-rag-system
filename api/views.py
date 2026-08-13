@@ -4,15 +4,15 @@ Django REST Framework Views for Customer Support RAG System.
 
 import logging
 from pathlib import Path
+
+import pypdf
 from django.conf import settings
+from django.http import FileResponse
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from rag.ingest import IngestionPipeline
-from rag.rag import RAGPipeline
-from rag.retrieve import ProviderRegistry
 from api.serializers import (
     ChatQuerySerializer,
     ChatResponseSerializer,
@@ -21,253 +21,926 @@ from api.serializers import (
     IngestRequestSerializer,
     IngestResponseSerializer,
 )
+from rag.ingest import IngestionPipeline
+from rag.rag import RAGPipeline
+from rag.retrieve import ProviderRegistry
+
 
 logger = logging.getLogger(__name__)
 
 
-def _ensure_auto_ingested():
-    """Helper to auto-ingest PDFs from DATA_DIR if store is currently empty."""
-    try:
-        vector_store = ProviderRegistry.get_vector_store_provider()
-        stats = vector_store.get_document_stats()
-        if stats.get("total_chunks", 0) == 0:
-            data_dir = getattr(settings, "DATA_DIR", Path(settings.BASE_DIR) / "data")
-            if Path(data_dir).is_dir():
-                logger.info("Auto-ingesting sample PDF documents from %s", data_dir)
-                pipeline = IngestionPipeline()
-                pipeline.ingest_directory(data_dir)
-    except Exception as e:
-        logger.exception("Error during auto-ingestion: %s", str(e))
+# ============================================================
+# HELPERS
+# ============================================================
 
+def get_data_directory():
+    """
+    Return the configured data directory.
+
+    Uses DATA_DIR from Django settings if available.
+    Otherwise defaults to <project_root>/data.
+    """
+
+    return Path(
+        getattr(
+            settings,
+            "DATA_DIR",
+            Path(settings.BASE_DIR) / "data",
+        )
+    )
+
+
+def get_vector_store():
+    """
+    Return the configured vector store provider.
+
+    The actual provider is resolved through ProviderRegistry.
+    """
+
+    return ProviderRegistry.get_vector_store_provider()
+
+
+def get_vector_store_stats():
+    """
+    Return statistics from the configured vector store.
+    """
+
+    vector_store = get_vector_store()
+
+    try:
+        stats = vector_store.get_document_stats()
+
+        if not isinstance(stats, dict):
+            logger.warning(
+                "Vector store returned unexpected stats format: %s",
+                type(stats),
+            )
+            return {
+                "total_documents": 0,
+                "total_chunks": 0,
+                "documents": [],
+            }
+
+        return {
+            "total_documents": stats.get(
+                "total_documents",
+                0,
+            ),
+            "total_chunks": stats.get(
+                "total_chunks",
+                0,
+            ),
+            "documents": stats.get(
+                "documents",
+                [],
+            ),
+        }
+
+    except Exception:
+        logger.exception(
+            "Failed to retrieve vector store statistics"
+        )
+        raise
+
+
+def ensure_auto_ingested():
+    """
+    Automatically ingest PDFs from DATA_DIR when the
+    vector store is empty.
+
+    This keeps the API convenient during development.
+    """
+
+    try:
+        stats = get_vector_store_stats()
+
+        total_chunks = stats.get(
+            "total_chunks",
+            0,
+        )
+
+        if total_chunks > 0:
+            return
+
+        data_dir = get_data_directory()
+
+        if not data_dir.is_dir():
+            logger.warning(
+                "DATA_DIR does not exist: %s",
+                data_dir,
+            )
+            return
+
+        pdf_files = list(
+            data_dir.glob("*.pdf")
+        )
+
+        if not pdf_files:
+            logger.warning(
+                "No PDF files found in DATA_DIR: %s",
+                data_dir,
+            )
+            return
+
+        logger.info(
+            "Vector store is empty. "
+            "Starting automatic ingestion from %s",
+            data_dir,
+        )
+
+        pipeline = IngestionPipeline()
+
+        pipeline.ingest_directory(
+            data_dir
+        )
+
+        logger.info(
+            "Automatic ingestion completed"
+        )
+
+    except Exception:
+        logger.exception(
+            "Automatic ingestion failed"
+        )
+
+        # Do not crash health checks/chat immediately.
+        # The actual endpoint will handle retrieval errors.
+        return
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
 
 class HealthCheckView(APIView):
-    """GET /api/health/ - Returns health status and index stats."""
+    """
+    GET /api/health/
+
+    Returns system health and vector-store statistics.
+    """
 
     def get(self, request):
-        logger.info("GET /api/health/ requested")
+        logger.info(
+            "GET /api/health/ requested"
+        )
+
         try:
-            _ensure_auto_ingested()
-            vector_store = ProviderRegistry.get_vector_store_provider()
-            stats = vector_store.get_document_stats()
+            ensure_auto_ingested()
+
+            stats = get_vector_store_stats()
+
+            vector_store = get_vector_store()
 
             data = {
                 "status": "healthy",
-                "documents_indexed": stats.get("total_documents", 0),
-                "chunks_indexed": stats.get("total_chunks", 0),
-                "vector_store_provider": vector_store.__class__.__name__,
+                "documents_indexed": stats.get(
+                    "total_documents",
+                    0,
+                ),
+                "chunks_indexed": stats.get(
+                    "total_chunks",
+                    0,
+                ),
+                "vector_store_provider": (
+                    vector_store.__class__.__name__
+                ),
             }
-            serializer = HealthCheckSerializer(data=data)
-            serializer.is_valid(raise_exception=True)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.exception("HealthCheckView failure: %s", str(e))
+
+            serializer = HealthCheckSerializer(
+                data=data
+            )
+
+            serializer.is_valid(
+                raise_exception=True
+            )
+
             return Response(
-                {"error": "Unable to check system health."},
+                serializer.data,
+                status=status.HTTP_200_OK,
+            )
+
+        except Exception:
+            logger.exception(
+                "HealthCheckView failed"
+            )
+
+            return Response(
+                {
+                    "error": (
+                        "Unable to check system health."
+                    )
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
 
+# ============================================================
+# DOCUMENT INGESTION
+# ============================================================
+
 class DocumentIngestView(APIView):
-    """POST /api/ingest/ - Triggers document ingestion from data/ directory."""
+    """
+    POST /api/ingest/
+
+    Ingests PDF documents from the configured data directory.
+
+    Optional request:
+
+    {
+        "data_dir": "path/to/data"
+    }
+    """
 
     def post(self, request):
-        logger.info("POST /api/ingest/ requested")
-        try:
-            serializer = IngestRequestSerializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
+        logger.info(
+            "POST /api/ingest/ requested"
+        )
 
-            custom_dir = serializer.validated_data.get("data_dir")
-            target_dir = Path(custom_dir) if custom_dir else getattr(settings, "DATA_DIR", Path(settings.BASE_DIR) / "data")
+        try:
+            serializer = IngestRequestSerializer(
+                data=request.data
+            )
+
+            serializer.is_valid(
+                raise_exception=True
+            )
+
+            custom_dir = serializer.validated_data.get(
+                "data_dir"
+            )
+
+            if custom_dir:
+                target_dir = Path(
+                    custom_dir
+                )
+            else:
+                target_dir = get_data_directory()
+
+            target_dir = target_dir.resolve()
 
             if not target_dir.is_dir():
-                logger.warning("Ingestion target directory does not exist: %s", target_dir)
+                logger.warning(
+                    "Ingestion directory does not exist: %s",
+                    target_dir,
+                )
+
                 return Response(
-                    {"error": f"Target directory does not exist: {target_dir.name}"},
+                    {
+                        "error": (
+                            "Target directory does not exist."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            pdf_files = list(
+                target_dir.glob("*.pdf")
+            )
+
+            if not pdf_files:
+                return Response(
+                    {
+                        "error": (
+                            "No PDF documents found "
+                            "in the target directory."
+                        )
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
             pipeline = IngestionPipeline()
-            report = pipeline.ingest_directory(target_dir)
+
+            report = pipeline.ingest_directory(
+                target_dir
+            )
 
             response_data = {
                 "status": "success",
-                "documents_processed": report["documents_processed"],
-                "total_chunks": report["total_chunks"],
-                "documents": report["documents"],
+                "documents_processed": report.get(
+                    "documents_processed",
+                    0,
+                ),
+                "total_chunks": report.get(
+                    "total_chunks",
+                    0,
+                ),
+                "documents": report.get(
+                    "documents",
+                    [],
+                ),
             }
-            resp_serializer = IngestResponseSerializer(data=response_data)
-            resp_serializer.is_valid(raise_exception=True)
-            return Response(resp_serializer.data, status=status.HTTP_200_OK)
-        except ValidationError as e:
-            logger.warning("Ingest validation error: %s", str(e))
-            return Response({"error": "Invalid ingestion request."}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            logger.exception("DocumentIngestView failure: %s", str(e))
+
+            response_serializer = (
+                IngestResponseSerializer(
+                    data=response_data
+                )
+            )
+
+            response_serializer.is_valid(
+                raise_exception=True
+            )
+
             return Response(
-                {"error": "Unable to process document ingestion request."},
+                response_serializer.data,
+                status=status.HTTP_200_OK,
+            )
+
+        except ValidationError:
+            logger.warning(
+                "Invalid ingestion request"
+            )
+
+            return Response(
+                {
+                    "error": (
+                        "Invalid ingestion request."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        except Exception:
+            logger.exception(
+                "DocumentIngestView failed"
+            )
+
+            return Response(
+                {
+                    "error": (
+                        "Unable to process "
+                        "document ingestion request."
+                    )
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+
+# ============================================================
+# DOCUMENT LIST / STATISTICS
+# ============================================================
 
 class DocumentListView(APIView):
-    """GET /api/documents/ - Returns list of ingested documents and chunk counts."""
+    """
+    GET /api/documents/
+
+    Returns information about indexed documents.
+    """
 
     def get(self, request):
-        logger.info("GET /api/documents/ requested")
-        try:
-            _ensure_auto_ingested()
-            vector_store = ProviderRegistry.get_vector_store_provider()
-            stats = vector_store.get_document_stats()
+        logger.info(
+            "GET /api/documents/ requested"
+        )
 
-            serializer = DocumentStatsSerializer(data=stats)
-            serializer.is_valid(raise_exception=True)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.exception("DocumentListView failure: %s", str(e))
+        try:
+            ensure_auto_ingested()
+
+            stats = get_vector_store_stats()
+
+            serializer = DocumentStatsSerializer(
+                data=stats
+            )
+
+            serializer.is_valid(
+                raise_exception=True
+            )
+
             return Response(
-                {"error": "Unable to retrieve document list."},
+                serializer.data,
+                status=status.HTTP_200_OK,
+            )
+
+        except Exception:
+            logger.exception(
+                "DocumentListView failed"
+            )
+
+            return Response(
+                {
+                    "error": (
+                        "Unable to retrieve "
+                        "document list."
+                    )
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+
+# ============================================================
+# CHAT
+# ============================================================
 
 class ChatView(APIView):
     """
-    POST /api/chat/ - Primary customer support QA endpoint.
-    Request: {"question": "What is the return policy?"}
-    Response: {"answer": "...", "sources": [{"document": "...", "page": 1, "relevance": 0.91, "chunk_id": "...", "text": "..."}]}
+    POST /api/chat/
+
+    Request:
+
+    {
+        "question": "What is the return policy?",
+        "top_k": 3,
+        "conversation_history": []
+    }
+
+    Response:
+
+    {
+        "answer": "...",
+        "sources": [...]
+    }
     """
 
     def post(self, request):
-        logger.info("POST /api/chat/ requested")
+        logger.info(
+            "POST /api/chat/ requested"
+        )
+
         try:
-            serializer = ChatQuerySerializer(data=request.data)
-            if not serializer.is_valid():
-                logger.warning("Chat validation error: %s", serializer.errors)
-                return Response(
-                    {"error": "Invalid request payload. 'question' field is required."},
-                    status=status.HTTP_400_BAD_REQUEST,
+            serializer = ChatQuerySerializer(
+                data=request.data
+            )
+
+            serializer.is_valid(
+                raise_exception=True
+            )
+
+            question = serializer.validated_data[
+                "question"
+            ]
+
+            top_k = serializer.validated_data.get(
+                "top_k",
+                getattr(
+                    settings,
+                    "DEFAULT_TOP_K",
+                    3,
+                ),
+            )
+
+            conversation_history = (
+                serializer.validated_data.get(
+                    "conversation_history",
+                    [],
                 )
+            )
 
-            _ensure_auto_ingested()
+            # Make sure documents are available.
+            ensure_auto_ingested()
 
-            question = serializer.validated_data["question"]
-            top_k = serializer.validated_data.get("top_k", getattr(settings, "DEFAULT_TOP_K", 3))
+            logger.info(
+                "Processing question: %s",
+                question,
+            )
 
             rag_pipeline = RAGPipeline()
-            result = rag_pipeline.ask(question=question, top_k=top_k)
 
-            # Enrich sources with source URL and page fragment anchor
-            for src in result.get("sources", []):
-                doc_name = src.get("document", "")
-                page_num = src.get("page", 1)
-                if "url" not in src or not src["url"]:
-                    src["url"] = f"/api/documents/{doc_name}/source/?page={page_num}#page={page_num}"
-                if "title" not in src or not src["title"]:
-                    src["title"] = doc_name.replace("_", " ").replace(".pdf", "").title()
+            result = rag_pipeline.ask(
+                question=question,
+                top_k=top_k,
+                conversation_history=conversation_history,
+            )
 
-            resp_serializer = ChatResponseSerializer(data=result)
-            resp_serializer.is_valid(raise_exception=True)
-            return Response(resp_serializer.data, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.exception("ChatView failure: %s", str(e))
+            if not isinstance(result, dict):
+                logger.error(
+                    "RAGPipeline returned unexpected type: %s",
+                    type(result),
+                )
+
+                return Response(
+                    {
+                        "error": (
+                            "Invalid response from "
+                            "RAG pipeline."
+                        )
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            answer = result.get(
+                "answer",
+                "",
+            )
+
+            sources = result.get(
+                "sources",
+                [],
+            )
+
+            # ------------------------------------------------
+            # Normalize source information
+            # ------------------------------------------------
+
+            normalized_sources = []
+
+            for source in sources:
+
+                if not isinstance(
+                    source,
+                    dict,
+                ):
+                    continue
+
+                document = source.get(
+                    "document",
+                    source.get(
+                        "file_name",
+                        source.get(
+                            "document_name",
+                            "",
+                        ),
+                    ),
+                )
+
+                page = source.get(
+                    "page",
+                    source.get(
+                        "page_number",
+                        1,
+                    ),
+                )
+
+                relevance = source.get(
+                    "relevance",
+                    source.get(
+                        "score",
+                        0.0,
+                    ),
+                )
+
+                chunk_id = source.get(
+                    "chunk_id",
+                    source.get(
+                        "id",
+                        "",
+                    ),
+                )
+
+                text = source.get(
+                    "text",
+                    source.get(
+                        "content",
+                        "",
+                    ),
+                )
+
+                try:
+                    page = int(page)
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    page = 1
+
+                try:
+                    relevance = float(
+                        relevance or 0.0
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    relevance = 0.0
+
+                title = source.get(
+                    "title",
+                    "",
+                )
+
+                if not title and document:
+                    title = (
+                        document
+                        .replace(
+                            "_",
+                            " ",
+                        )
+                        .replace(
+                            ".pdf",
+                            "",
+                        )
+                        .title()
+                    )
+
+                # URL points to the local PDF source
+                # endpoint.
+                url = source.get(
+                    "url",
+                    "",
+                )
+
+                if not url and document:
+                    url = (
+                        f"/api/documents/"
+                        f"{document}/source/"
+                        f"?page={page}"
+                        f"#page={page}"
+                    )
+
+                normalized_sources.append(
+                    {
+                        "document": document,
+                        "page": page,
+                        "relevance": relevance,
+                        "chunk_id": chunk_id,
+                        "text": text,
+                        "url": url,
+                        "title": title,
+                    }
+                )
+
+            response_data = {
+                "answer": answer,
+                "sources": normalized_sources,
+            }
+
+            response_serializer = (
+                ChatResponseSerializer(
+                    data=response_data
+                )
+            )
+
+            response_serializer.is_valid(
+                raise_exception=True
+            )
+
             return Response(
-                {"error": "Unable to process your request."},
+                response_serializer.data,
+                status=status.HTTP_200_OK,
+            )
+
+        except ValidationError:
+            logger.warning(
+                "Chat request validation failed"
+            )
+
+            return Response(
+                {
+                    "error": (
+                        "Invalid request payload. "
+                        "'question' field is required."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        except Exception:
+            logger.exception(
+                "ChatView failed"
+            )
+
+            return Response(
+                {
+                    "error": (
+                        "Unable to process "
+                        "your request."
+                    )
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
 
-from django.http import FileResponse
-import pypdf
-
+# ============================================================
+# DOCUMENT SOURCE
+# ============================================================
 
 class DocumentSourceView(APIView):
     """
     GET /api/documents/<document_name>/source/?page=1
-    Serves requested PDF file securely from settings.DATA_DIR.
-    Validates file type, page existence, and prevents path traversal attacks.
+
+    Serves a PDF from DATA_DIR.
+
+    Security:
+    - Only PDF files are allowed.
+    - Directory traversal is blocked.
+    - The resolved file must remain inside DATA_DIR.
+    - Requested page number is validated.
     """
 
-    def get(self, request, document_name):
-        logger.info("GET /api/documents/%s/source/ requested", document_name)
+    def get(
+        self,
+        request,
+        document_name,
+    ):
+        logger.info(
+            "GET /api/documents/%s/source/ requested",
+            document_name,
+        )
 
-        # 1. Reject path traversal, directory separators, and parent references
-        if not document_name or "/" in document_name or "\\" in document_name or ".." in document_name:
-            logger.warning("Path traversal attempt blocked: %s", document_name)
+        # ----------------------------------------------------
+        # Validate document name
+        # ----------------------------------------------------
+
+        if not document_name:
             return Response(
-                {"error": "Invalid document name. Path traversal is strictly prohibited."},
+                {
+                    "error": (
+                        "Document name is required."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 2. Only allow .pdf extension
-        if not document_name.lower().endswith(".pdf"):
-            logger.warning("Non-PDF document requested: %s", document_name)
+        if (
+            "/" in document_name
+            or "\\" in document_name
+            or ".." in document_name
+        ):
+            logger.warning(
+                "Path traversal attempt blocked: %s",
+                document_name,
+            )
+
             return Response(
-                {"error": "Invalid file type. Only PDF documents can be accessed."},
+                {
+                    "error": (
+                        "Invalid document name."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 3. Locate file inside settings.DATA_DIR
-        data_dir = Path(getattr(settings, "DATA_DIR", Path(settings.BASE_DIR) / "data")).resolve()
-        file_path = (data_dir / document_name).resolve()
+        # ----------------------------------------------------
+        # Validate extension
+        # ----------------------------------------------------
 
+        if not document_name.lower().endswith(
+            ".pdf"
+        ):
+            return Response(
+                {
+                    "error": (
+                        "Invalid file type. "
+                        "Only PDF documents are allowed."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ----------------------------------------------------
+        # Resolve DATA_DIR
+        # ----------------------------------------------------
+
+        data_dir = get_data_directory().resolve()
+
+        file_path = (
+            data_dir / document_name
+        ).resolve()
+
+        # ----------------------------------------------------
         # Containment check
+        # ----------------------------------------------------
+
         try:
-            file_path.relative_to(data_dir)
+            file_path.relative_to(
+                data_dir
+            )
         except ValueError:
-            logger.warning("File outside DATA_DIR requested: %s", document_name)
+
+            logger.warning(
+                "Attempt to access file outside DATA_DIR: %s",
+                document_name,
+            )
+
             return Response(
-                {"error": "Access denied."},
+                {
+                    "error": "Access denied."
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # ----------------------------------------------------
+        # Check file existence
+        # ----------------------------------------------------
 
         if not file_path.is_file():
-            logger.warning("Requested document not found: %s", document_name)
+            logger.warning(
+                "Document not found: %s",
+                document_name,
+            )
+
             return Response(
-                {"error": f"Document '{document_name}' not found."},
+                {
+                    "error": (
+                        f"Document "
+                        f"'{document_name}' "
+                        f"not found."
+                    )
+                },
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # 4. Validate page number parameter
-        page_param = request.query_params.get("page", 1)
+        # ----------------------------------------------------
+        # Validate page number
+        # ----------------------------------------------------
+
+        page_param = request.query_params.get(
+            "page",
+            "1",
+        )
+
         try:
-            page_num = int(page_param)
-        except (ValueError, TypeError):
-            logger.warning("Invalid page parameter: %s", page_param)
+            page_num = int(
+                page_param
+            )
+        except (
+            ValueError,
+            TypeError,
+        ):
+
             return Response(
-                {"error": "Page number must be an integer."},
+                {
+                    "error": (
+                        "Page number must "
+                        "be an integer."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if page_num < 1:
-            logger.warning("Page number < 1 requested: %d", page_num)
             return Response(
-                {"error": "Page number must be a positive integer."},
+                {
+                    "error": (
+                        "Page number must "
+                        "be a positive integer."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # ----------------------------------------------------
+        # Validate PDF page count
+        # ----------------------------------------------------
+
         try:
-            reader = pypdf.PdfReader(str(file_path))
-            total_pages = len(reader.pages)
-            if page_num > total_pages:
-                logger.warning("Page number %d exceeds total pages %d in %s", page_num, total_pages, document_name)
-                return Response(
-                    {"error": f"Page number {page_num} exceeds document total pages ({total_pages})."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        except Exception as e:
-            logger.exception("Error validating PDF page count for %s: %s", document_name, str(e))
+            reader = pypdf.PdfReader(
+                str(file_path)
+            )
+
+            total_pages = len(
+                reader.pages
+            )
+
+        except Exception:
+            logger.exception(
+                "Failed to inspect PDF: %s",
+                document_name,
+            )
+
             return Response(
-                {"error": "Error inspecting PDF document."},
+                {
+                    "error": (
+                        "Unable to inspect "
+                        "PDF document."
+                    )
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        try:
-            response = FileResponse(open(file_path, "rb"), content_type="application/pdf")
-            response["Content-Disposition"] = f'inline; filename="{document_name}"'
-            return response
-        except Exception as e:
-            logger.exception("Error serving PDF file %s: %s", document_name, str(e))
+        if page_num > total_pages:
             return Response(
-                {"error": "Unable to serve PDF document."},
+                {
+                    "error": (
+                        f"Page number {page_num} "
+                        f"exceeds document total "
+                        f"pages ({total_pages})."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ----------------------------------------------------
+        # Serve PDF
+        # ----------------------------------------------------
+
+        try:
+            response = FileResponse(
+                open(
+                    file_path,
+                    "rb",
+                ),
+                content_type="application/pdf",
+            )
+
+            response[
+                "Content-Disposition"
+            ] = (
+                f'inline; '
+                f'filename="{document_name}"'
+            )
+
+            return response
+
+        except Exception:
+            logger.exception(
+                "Failed to serve PDF: %s",
+                document_name,
+            )
+
+            return Response(
+                {
+                    "error": (
+                        "Unable to serve "
+                        "PDF document."
+                    )
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )

@@ -3,7 +3,7 @@ PDF Ingestion and Document Chunking Module.
 Extracts text from PDF files, chunks them into configurable segments with page metadata,
 and feeds them to the configured VectorStoreProvider via ProviderRegistry.
 """
-
+import uuid
 import logging
 import os
 from pathlib import Path
@@ -55,7 +55,7 @@ class PDFExtractor:
 class DocumentChunker:
     """Splits document page text into smaller overlapping text chunks."""
 
-    def __init__(self, chunk_size: int = 500, chunk_overlap: int = 50):
+    def __init__(self, chunk_size: int = 700, chunk_overlap: int = 100):
         if chunk_size <= 0:
             raise ValueError("chunk_size must be a positive integer.")
         if chunk_overlap < 0 or chunk_overlap >= chunk_size:
@@ -79,7 +79,13 @@ class DocumentChunker:
             chunk_text = page_text[start:end].strip()
 
             if chunk_text:
-                chunk_id = f"{document_name}_p{page_number}_c{chunk_idx}"
+                chunk_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"{document_name}_p{page_number}_c{chunk_idx}"
+                    )
+                )
+
                 chunks.append(
                     DocumentChunk(
                         chunk_id=chunk_id,
@@ -89,6 +95,9 @@ class DocumentChunker:
                         metadata={
                             "char_length": len(chunk_text),
                             "chunk_index": chunk_idx,
+                            "original_chunk_id": (
+                                f"{document_name}_p{page_number}_c{chunk_idx}"
+                            ),
                         },
                     )
                 )

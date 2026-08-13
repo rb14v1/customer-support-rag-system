@@ -5,6 +5,16 @@ Serializers for Django REST API endpoints.
 from rest_framework import serializers
 
 
+class ConversationMessageSerializer(serializers.Serializer):
+    role = serializers.CharField(
+        help_text="Message role: 'user' or 'assistant'."
+    )
+    content = serializers.CharField(
+        allow_blank=True,
+        help_text="Message content text."
+    )
+
+
 class ChatQuerySerializer(serializers.Serializer):
     question = serializers.CharField(
         required=True,
@@ -17,6 +27,12 @@ class ChatQuerySerializer(serializers.Serializer):
         min_value=1,
         max_value=10,
         help_text="Number of top context chunks to retrieve."
+    )
+    conversation_history = ConversationMessageSerializer(
+        many=True,
+        required=False,
+        default=[],
+        help_text="Previous conversation messages for multi-turn context."
     )
 
 

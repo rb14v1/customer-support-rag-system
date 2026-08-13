@@ -1,26 +1,49 @@
 """
-Retrieval module defining abstract interfaces for Embedding and VectorStore providers,
-along with default mock implementations for local testing and a ProviderRegistry for DI.
+Hybrid retrieval layer for Customer Support RAG.
+
+Uses:
+- Azure OpenAI -> embeddings
+- Azure AI Search -> hybrid keyword/vector search
+- Qdrant -> vector similarity search
+
+Keeps the existing ProviderRegistry architecture so ingest.py
+does not need any changes.
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any, Dict, List
 import logging
-import math
-import re
-from typing import Any, Dict, List, Optional
-import zlib
-import numpy as np
+import os
 
 from dotenv import load_dotenv
+from qdrant_client import QdrantClient
+from qdrant_client.models import PointStruct
+
+from azure_services.azure_config import (
+    get_openai_client,
+    get_search_client,
+)
+from azure_services.search_service import (
+    upload_documents,
+    search_documents,
+)
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# DOCUMENT MODELS
+# ============================================================
+
 @dataclass
 class DocumentChunk:
+    """
+    Represents one chunk of an ingested document.
+    """
+
     chunk_id: str
     text: str
     document_name: str
@@ -30,6 +53,10 @@ class DocumentChunk:
 
 @dataclass
 class SearchResult:
+    """
+    Represents one retrieved search result.
+    """
+
     chunk_id: str
     text: str
     document_name: str
@@ -38,524 +65,750 @@ class SearchResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+# ============================================================
+# ABSTRACT EMBEDDING PROVIDER
+# ============================================================
+
 class AbstractEmbeddingProvider(ABC):
     """
-    Interface for text embedding generation.
-    Feature/azure branch can inject AzureOpenAIEmbeddingProvider.
+    Abstract interface for embedding providers.
     """
 
     @abstractmethod
     def embed_text(self, text: str) -> List[float]:
-        """Generate embedding vector for a single string."""
+        """
+        Generate an embedding for a single piece of text.
+        """
         pass
 
     @abstractmethod
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        """Generate embedding vectors for a list of strings."""
+    def embed_batch(
+        self,
+        texts: List[str],
+    ) -> List[List[float]]:
+        """
+        Generate embeddings for multiple texts.
+        """
         pass
 
+
+# ============================================================
+# ABSTRACT VECTOR STORE PROVIDER
+# ============================================================
 
 class AbstractVectorStoreProvider(ABC):
     """
-    Interface for vector store indexing and similarity search.
-    Feature/azure branch can inject AzureAISearchVectorStoreProvider.
+    Abstract interface for vector store providers.
     """
 
     @abstractmethod
-    def index_chunks(self, chunks: List[DocumentChunk]) -> int:
+    def index_chunks(
+        self,
+        chunks: List[DocumentChunk],
+    ) -> int:
         """
-        Upload/index document chunks into the vector store.
-        Returns the count of successfully indexed chunks.
+        Index document chunks.
         """
         pass
 
     @abstractmethod
-    def search(self, query: str, top_k: int = 3) -> List[SearchResult]:
+    def search(
+        self,
+        query: str,
+        top_k: int = 3,
+    ) -> List[SearchResult]:
         """
-        Perform similarity search for a given query string.
-        Returns top-k matching SearchResult items.
-        """
-        pass
-
-    @abstractmethod
-    def get_document_stats(self) -> Dict[str, Any]:
-        """
-        Return document index statistics: total documents, total chunks, document names list.
+        Search for relevant document chunks.
         """
         pass
 
     @abstractmethod
-    def clear(self) -> None:
-        """Clear indexed chunks (used for testing or re-ingestion)."""
+    def get_document_stats(
+        self,
+    ) -> Dict[str, Any]:
+        """
+        Return document and chunk statistics.
+        """
         pass
-
-
-class AbstractLLMProvider(ABC):
-    """
-    Interface for LLM response generation.
-    Feature/azure branch can inject AzureOpenAILLMProvider.
-    """
 
     @abstractmethod
-    def generate_response(self, prompt: str, search_results: List[SearchResult]) -> str:
-        """Generate text response from prompt and search results."""
+    def clear(self):
+        """
+        Clear the vector store.
+        """
         pass
 
 
-STOP_WORDS = {
-    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'has', 'he', 'in', 'is', 'it', 'its',
-    'of', 'on', 'that', 'the', 'to', 'was', 'were', 'will', 'with', 'what', 'how', 'do', 'does', 'i', 'my',
-    'you', 'your', 'can', 'should', 'would', 'could', 'about', 'this', 'there', 'their', 'or', 'if', 'any'
-}
+# ============================================================
+# AZURE OPENAI EMBEDDING PROVIDER
+# ============================================================
 
-
-def _tokenize_text(text: str) -> List[str]:
-    if not text or not isinstance(text, str):
-        return []
-    words = re.findall(r'\b[a-z0-9]+\b', text.lower())
-    tokens = []
-    for w in words:
-        if w in STOP_WORDS:
-            continue
-        if len(w) > 4 and w.endswith('ing'):
-            w = w[:-3]
-        elif len(w) > 3 and w.endswith('s') and not w.endswith('ss'):
-            w = w[:-1]
-        tokens.append(w)
-    return tokens
-
-
-class MockEmbeddingProvider(AbstractEmbeddingProvider):
+class AzureOpenAIEmbeddingProvider(
+    AbstractEmbeddingProvider
+):
     """
-    Default lightweight local mock embedding provider for local dev and testing.
-    Uses stopword-filtered normalized token feature hashing to generate float vectors.
+    Generates embeddings using Azure OpenAI.
     """
 
-    def __init__(self, dim: int = 512):
-        if dim <= 0:
-            raise ValueError("Embedding dimension must be a positive integer.")
-        self.dim = dim
-
-    def _hash_vector(self, text: str) -> List[float]:
-        vec = [0.0] * self.dim
-        tokens = _tokenize_text(text)
-        if not tokens:
-            return vec
-        for token in tokens:
-            idx = zlib.crc32(token.encode('utf-8')) % self.dim
-            vec[idx] += 1.0
-        norm = math.sqrt(sum(v * v for v in vec))
-        if norm > 0:
-            vec = [v / norm for v in vec]
-        return vec
-
-    def embed_text(self, text: str) -> List[float]:
-        try:
-            return self._hash_vector(text)
-        except Exception as e:
-            logger.error("Error generating text embedding: %s", str(e))
-            return [0.0] * self.dim
-
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        if not isinstance(texts, list):
-            raise TypeError("texts must be a list of strings.")
-        return [self.embed_text(t) for t in texts]
-
-
-class MockVectorStoreProvider(AbstractVectorStoreProvider):
-    """
-    Default in-memory mock vector store provider for local dev and testing.
-    Stores chunks in memory and computes cosine similarity search.
-    Includes document title metadata weighting for accurate local ranking.
-    """
-
-    def __init__(self, embedding_provider: Optional[AbstractEmbeddingProvider] = None):
-        self.embedding_provider = embedding_provider or MockEmbeddingProvider()
-        self.chunks: List[DocumentChunk] = []
-        self.embeddings: List[List[float]] = []
-
-    def _prepare_chunk_text(self, chunk: DocumentChunk) -> str:
-        doc_title_clean = chunk.document_name.replace('.pdf', '').replace('_', ' ')
-        return f"{doc_title_clean} {doc_title_clean} {doc_title_clean} {chunk.text}"
-
-    def index_chunks(self, chunks: List[DocumentChunk]) -> int:
-        if not chunks:
-            return 0
-
-        logger.info("Indexing %d document chunks in MockVectorStoreProvider", len(chunks))
-        try:
-            existing_map = {chunk.chunk_id: idx for idx, chunk in enumerate(self.chunks)}
-            new_chunks_to_embed = []
-
-            for chunk in chunks:
-                combined_text = self._prepare_chunk_text(chunk)
-                if chunk.chunk_id in existing_map:
-                    idx = existing_map[chunk.chunk_id]
-                    self.chunks[idx] = chunk
-                    self.embeddings[idx] = self.embedding_provider.embed_text(combined_text)
-                else:
-                    new_chunks_to_embed.append((chunk, combined_text))
-
-            if new_chunks_to_embed:
-                texts = [item[1] for item in new_chunks_to_embed]
-                chunks_to_add = [item[0] for item in new_chunks_to_embed]
-                new_embeddings = self.embedding_provider.embed_batch(texts)
-                self.chunks.extend(chunks_to_add)
-                self.embeddings.extend(new_embeddings)
-
-            logger.info("MockVectorStoreProvider now holds %d total chunks", len(self.chunks))
-            return len(chunks)
-        except Exception as e:
-            logger.exception("Error indexing chunks in MockVectorStoreProvider: %s", str(e))
-            raise RuntimeError(f"Error indexing chunks: {str(e)}") from e
-
-    def search(self, query: str, top_k: int = 3) -> List[SearchResult]:
-        if not self.chunks or not query or not query.strip():
-            logger.info("Vector search skipped (empty query or empty store)")
-            return []
-
-        logger.info("Executing vector similarity search for query: '%s' (top_k=%d)", query.strip(), top_k)
-        try:
-            query_vec = np.array(self.embedding_provider.embed_text(query), dtype=float)
-            query_norm = np.linalg.norm(query_vec)
-
-            if query_norm == 0:
-                logger.warning("Query vector norm is 0 for query: '%s'", query)
-                return []
-
-            results: List[SearchResult] = []
-            for chunk, emb in zip(self.chunks, self.embeddings):
-                emb_vec = np.array(emb, dtype=float)
-                emb_norm = np.linalg.norm(emb_vec)
-                if emb_norm == 0:
-                    score = 0.0
-                else:
-                    score = float(np.dot(query_vec, emb_vec) / (query_norm * emb_norm))
-
-                results.append(
-                    SearchResult(
-                        chunk_id=chunk.chunk_id,
-                        text=chunk.text,
-                        document_name=chunk.document_name,
-                        page_number=chunk.page_number,
-                        relevance=score,
-                        metadata=chunk.metadata,
-                    )
-                )
-
-            # Sort by relevance descending
-            results.sort(key=lambda x: x.relevance, reverse=True)
-            top_results = results[:top_k]
-            if top_results:
-                logger.info("Search returned %d top results. Highest score: %.4f", len(top_results), top_results[0].relevance)
-            return top_results
-        except Exception as e:
-            logger.exception("Error executing vector search for query '%s': %s", query, str(e))
-            raise RuntimeError(f"Vector search failed: {str(e)}") from e
-
-    def get_document_stats(self) -> Dict[str, Any]:
-        docs = sorted(list({c.document_name for c in self.chunks}))
-        return {
-            "total_documents": len(docs),
-            "total_chunks": len(self.chunks),
-            "documents": docs,
-        }
-
-    def clear(self) -> None:
-        logger.info("Clearing MockVectorStoreProvider index")
-        self.chunks.clear()
-        self.embeddings.clear()
-
-
-class AzureOpenAIEmbeddingProvider(AbstractEmbeddingProvider):
-    """
-    Azure OpenAI implementation of AbstractEmbeddingProvider.
-    Uses Azure OpenAI text embedding models (e.g., text-embedding-3-small).
-    """
-
-    def __init__(self, client=None, deployment_name: Optional[str] = None):
-        from azure_services.azure_config import (
-            get_openai_client,
-            AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
+    def __init__(self):
+        logger.info(
+            "Initializing Azure OpenAI embedding provider"
         )
 
-        self.client = client or get_openai_client()
-        self.deployment_name = (
-            deployment_name
-            or AZURE_OPENAI_EMBEDDING_DEPLOYMENT
-            or "text-embedding-3-small"
-        )
-        self.dim = 1536
+        self.client = get_openai_client()
 
-    def embed_text(self, text: str) -> List[float]:
+        self.model = os.getenv(
+            "AZURE_OPENAI_EMBEDDING_DEPLOYMENT"
+        )
+
+        if not self.model:
+            raise ValueError(
+                "AZURE_OPENAI_EMBEDDING_DEPLOYMENT "
+                "is not configured."
+            )
+
+    def embed_text(
+        self,
+        text: str,
+    ) -> List[float]:
+        """
+        Generate an embedding for one text.
+        """
+
         if not text or not text.strip():
-            return []
+            raise ValueError(
+                "Cannot generate embedding for empty text."
+            )
+
         try:
             response = self.client.embeddings.create(
-                input=[text.strip()],
-                model=self.deployment_name,
+                model=self.model,
+                input=text,
             )
-            return response.data[0].embedding
-        except Exception as e:
-            logger.exception("Error generating Azure OpenAI embedding: %s", str(e))
+
+            embedding = response.data[0].embedding
+
+            logger.debug(
+                "Generated embedding with dimension %d",
+                len(embedding),
+            )
+
+            return embedding
+
+        except Exception:
+            logger.exception(
+                "Failed to generate text embedding"
+            )
             raise
 
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        if not isinstance(texts, list):
-            raise TypeError("texts must be a list of strings.")
+    def embed_batch(
+        self,
+        texts: List[str],
+    ) -> List[List[float]]:
+        """
+        Generate embeddings for multiple texts.
+        """
+
         if not texts:
             return []
-        cleaned_texts = [t.strip() if t and t.strip() else " " for t in texts]
+
         try:
-            batch_size = 100
-            all_embeddings = []
-            for i in range(0, len(cleaned_texts), batch_size):
-                batch = cleaned_texts[i : i + batch_size]
-                response = self.client.embeddings.create(
-                    input=batch,
-                    model=self.deployment_name,
-                )
-                all_embeddings.extend([item.embedding for item in response.data])
-            return all_embeddings
-        except Exception as e:
-            logger.exception("Error generating Azure OpenAI embedding batch: %s", str(e))
+            response = self.client.embeddings.create(
+                model=self.model,
+                input=texts,
+            )
+
+            embeddings = [
+                item.embedding
+                for item in response.data
+            ]
+
+            logger.info(
+                "Generated %d embeddings",
+                len(embeddings),
+            )
+
+            return embeddings
+
+        except Exception:
+            logger.exception(
+                "Failed to generate batch embeddings"
+            )
             raise
 
 
-class AzureAISearchVectorStoreProvider(AbstractVectorStoreProvider):
+# ============================================================
+# AZURE + QDRANT VECTOR STORE
+# ============================================================
+
+class AzureQdrantVectorStoreProvider(
+    AbstractVectorStoreProvider
+):
     """
-    Azure AI Search implementation of AbstractVectorStoreProvider.
-    Handles chunk indexing, vector search, and index statistics via Azure AI Search SDK.
+    Hybrid vector store provider.
+
+    Documents are indexed into BOTH:
+
+    1. Azure AI Search
+    2. Qdrant
+
+    Retrieval searches BOTH systems and combines
+    their results.
     """
 
     def __init__(
         self,
-        search_client=None,
-        embedding_provider: Optional[AbstractEmbeddingProvider] = None,
+        embedding_provider=None,
     ):
-        from azure_services.azure_config import (
-            AZURE_SEARCH_API_KEY,
-            AZURE_SEARCH_ENDPOINT,
-            AZURE_SEARCH_INDEX_NAME,
-            get_search_client,
+        logger.info(
+            "Initializing Azure + Qdrant vector store"
         )
-        from azure_services.search_service import ensure_search_index
 
         self.embedding_provider = (
-            embedding_provider or ProviderRegistry.get_embedding_provider()
+            embedding_provider
+            or AzureOpenAIEmbeddingProvider()
         )
-        self.search_client = search_client or get_search_client()
-        self._index_name = AZURE_SEARCH_INDEX_NAME
-        self._endpoint = AZURE_SEARCH_ENDPOINT
-        self._key = AZURE_SEARCH_API_KEY
 
-        if self._endpoint and self._key and self._index_name:
-            try:
-                ensure_search_index(
-                    endpoint=self._endpoint,
-                    key=self._key,
-                    index_name=self._index_name,
-                    embedding_dim=getattr(self.embedding_provider, "dim", 1536),
-                )
-            except Exception as e:
-                logger.warning("Could not auto-create Azure Search index during init: %s", str(e))
+        # Azure AI Search
+        self.search_client = get_search_client()
 
-    def _sanitize_chunk_id(self, raw_id: str) -> str:
-        return re.sub(r"[^a-zA-Z0-9_\-=]", "_", raw_id)
+        # Qdrant
+        qdrant_url = os.getenv("QDRANT_URL")
+        qdrant_api_key = os.getenv("QDRANT_API_KEY")
 
-    def index_chunks(self, chunks: List[DocumentChunk]) -> int:
+        if not qdrant_url:
+            raise ValueError(
+                "QDRANT_URL is not configured."
+            )
+
+        self.qdrant = QdrantClient(
+            url=qdrant_url,
+            api_key=qdrant_api_key,
+        )
+
+        self.collection = os.getenv(
+            "QDRANT_COLLECTION_NAME",
+            "customer_support",
+        )
+
+        logger.info(
+            "Hybrid vector store initialized. "
+            "Qdrant collection: %s",
+            self.collection,
+        )
+
+    # ========================================================
+    # INDEX CHUNKS
+    # ========================================================
+
+    def index_chunks(
+        self,
+        chunks: List[DocumentChunk],
+    ) -> int:
+        """
+        Generate embeddings and index chunks into
+        both Azure AI Search and Qdrant.
+        """
+
         if not chunks:
+            logger.warning(
+                "No chunks supplied for indexing."
+            )
             return 0
 
-        logger.info("Indexing %d document chunks into Azure AI Search", len(chunks))
-        try:
-            from azure_services.search_service import upload_documents
+        logger.info(
+            "Indexing %d chunks",
+            len(chunks),
+        )
 
-            texts = [c.text for c in chunks]
-            embeddings = self.embedding_provider.embed_batch(texts)
+        # ----------------------------------------------------
+        # Generate embeddings
+        # ----------------------------------------------------
 
-            documents = []
-            for chunk, emb in zip(chunks, embeddings):
-                safe_id = self._sanitize_chunk_id(chunk.chunk_id)
-                doc = {
-                    "id": safe_id,
+        texts = [
+            chunk.text
+            for chunk in chunks
+        ]
+
+        embeddings = (
+            self.embedding_provider.embed_batch(
+                texts
+            )
+        )
+
+        if len(embeddings) != len(chunks):
+            raise RuntimeError(
+                "Number of generated embeddings does not "
+                "match number of document chunks."
+            )
+
+        # ----------------------------------------------------
+        # Azure AI Search documents
+        # ----------------------------------------------------
+
+        azure_documents = []
+
+        for chunk, embedding in zip(
+            chunks,
+            embeddings,
+        ):
+            azure_documents.append(
+                {
+                    "id": chunk.chunk_id,
                     "content": chunk.text,
-                    "document_name": chunk.document_name,
-                    "page_number": int(chunk.page_number),
-                    "vector": emb,
+                    "document_name": (
+                        chunk.document_name
+                    ),
+                    "page_number": (
+                        chunk.page_number
+                    ),
+                    "vector": embedding,
                 }
-                documents.append(doc)
+            )
 
-            upload_documents(self.search_client, documents)
-            logger.info("Successfully indexed %d chunks in Azure AI Search", len(documents))
-            return len(documents)
-        except Exception as e:
-            logger.exception("Failed to index chunks in AzureAISearchVectorStoreProvider: %s", str(e))
-            raise RuntimeError(f"Azure Search indexing failed: {str(e)}") from e
+        upload_documents(
+            self.search_client,
+            azure_documents,
+        )
 
-    def search(self, query: str, top_k: int = 3) -> List[SearchResult]:
+        logger.info(
+            "Uploaded %d chunks to Azure AI Search",
+            len(azure_documents),
+        )
+
+        # ----------------------------------------------------
+        # Qdrant points
+        # ----------------------------------------------------
+
+        points = []
+
+        for chunk, embedding in zip(
+            chunks,
+            embeddings,
+        ):
+            points.append(
+                PointStruct(
+                    id=chunk.chunk_id,
+                    vector=embedding,
+                    payload={
+                        "content": chunk.text,
+                        "document_name": (
+                            chunk.document_name
+                        ),
+                        "page_number": (
+                            chunk.page_number
+                        ),
+                        "chunk_id": chunk.chunk_id,
+                        **chunk.metadata,
+                    },
+                )
+            )
+
+        self.qdrant.upsert(
+            collection_name=self.collection,
+            points=points,
+        )
+
+        logger.info(
+            "Uploaded %d chunks to Qdrant",
+            len(points),
+        )
+
+        logger.info(
+            "Successfully indexed %d chunks "
+            "into Azure AI Search and Qdrant",
+            len(chunks),
+        )
+
+        return len(chunks)
+
+    # ========================================================
+    # SEARCH
+    # ========================================================
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 3,
+    ) -> List[SearchResult]:
+        """
+        Search Azure AI Search and Qdrant, then combine
+        and deduplicate the results.
+        """
+
         if not query or not query.strip():
             return []
 
-        logger.info("Executing Azure AI Search hybrid/vector search for: '%s'", query)
-        try:
-            from azure_services.search_service import search_documents
+        if top_k <= 0:
+            return []
 
-            query_vec = self.embedding_provider.embed_text(query)
-            raw_docs = search_documents(
-                search_client=self.search_client,
+        logger.info(
+            "Starting hybrid search for query: %s",
+            query,
+        )
+
+        # ----------------------------------------------------
+        # Create query embedding
+        # ----------------------------------------------------
+
+        embedding = (
+            self.embedding_provider.embed_text(
+                query
+            )
+        )
+
+        results: List[SearchResult] = []
+
+        # ====================================================
+        # AZURE AI SEARCH
+        # ====================================================
+
+        try:
+            azure_results = search_documents(
+                self.search_client,
                 query=query,
-                query_vector=query_vec if query_vec else None,
+                query_vector=embedding,
                 top=top_k,
             )
 
-            results: List[SearchResult] = []
-            for doc in raw_docs:
-                raw_score = float(doc.get("@search.score", 0.0))
-                # Azure Search hybrid RRF score max is ~0.0333 for top rank
-                if raw_score <= 0.05:
-                    normalized_score = min(1.0, raw_score / 0.0333)
-                else:
-                    normalized_score = min(1.0, raw_score)
+            logger.info(
+                "Azure AI Search returned %d results",
+                len(azure_results),
+            )
+
+            for document in azure_results:
+
+                content = document.get(
+                    "content",
+                    "",
+                )
+
+                document_name = document.get(
+                    "document_name",
+                    "",
+                )
+
+                page_number = document.get(
+                    "page_number",
+                    1,
+                )
+
+                chunk_id = document.get(
+                    "id",
+                    "",
+                )
+
+                if not content or not chunk_id:
+                    continue
+
+                relevance = float(
+                    document.get(
+                        "@search.score",
+                        0.0,
+                    )
+                    or 0.0
+                )
 
                 results.append(
                     SearchResult(
-                        chunk_id=doc.get("id", ""),
-                        text=doc.get("content", ""),
-                        document_name=doc.get("document_name", ""),
-                        page_number=int(doc.get("page_number", 1)),
-                        relevance=normalized_score,
-                        metadata={},
+                        chunk_id=str(chunk_id),
+                        text=content,
+                        document_name=(
+                            document_name
+                        ),
+                        page_number=int(
+                            page_number
+                        ),
+                        relevance=relevance,
+                        metadata={
+                            "source": "azure_ai_search",
+                        },
                     )
                 )
 
-            logger.info("Retrieved %d search results from Azure AI Search", len(results))
-            return results
-        except Exception as e:
-            logger.exception("Failed vector search in AzureAISearchVectorStoreProvider: %s", str(e))
-            raise RuntimeError(f"Azure Search query failed: {str(e)}") from e
+        except Exception:
+            logger.exception(
+                "Azure AI Search retrieval failed"
+            )
 
-    def get_document_stats(self) -> Dict[str, Any]:
+        # ====================================================
+        # QDRANT
+        # ====================================================
+
         try:
-            total_chunks = self.search_client.get_document_count()
-            results = self.search_client.search(
+            qdrant_response = (
+                self.qdrant.query_points(
+                    collection_name=self.collection,
+                    query=embedding,
+                    limit=top_k,
+                    with_payload=True,
+                )
+            )
+
+            logger.info(
+                "Qdrant returned %d results",
+                len(qdrant_response.points),
+            )
+
+            for point in qdrant_response.points:
+
+                payload = (
+                    point.payload or {}
+                )
+
+                content = payload.get(
+                    "content",
+                    "",
+                )
+
+                if not content:
+                    continue
+
+                chunk_id = payload.get(
+                    "chunk_id",
+                    str(point.id),
+                )
+
+                document_name = payload.get(
+                    "document_name",
+                    "",
+                )
+
+                page_number = payload.get(
+                    "page_number",
+                    1,
+                )
+
+                results.append(
+                    SearchResult(
+                        chunk_id=str(chunk_id),
+                        text=content,
+                        document_name=(
+                            document_name
+                        ),
+                        page_number=int(
+                            page_number
+                        ),
+                        relevance=float(
+                            point.score or 0.0
+                        ),
+                        metadata={
+                            "source": "qdrant",
+                        },
+                    )
+                )
+
+        except Exception:
+            logger.exception(
+                "Qdrant retrieval failed"
+            )
+
+        # ====================================================
+        # DEDUPLICATE RESULTS
+        # ====================================================
+
+        unique_results: Dict[
+            str,
+            SearchResult,
+        ] = {}
+
+        for result in results:
+
+            existing = unique_results.get(
+                result.chunk_id
+            )
+
+            if (
+                existing is None
+                or result.relevance
+                > existing.relevance
+            ):
+                unique_results[
+                    result.chunk_id
+                ] = result
+
+        final_results = list(
+            unique_results.values()
+        )
+
+        # ----------------------------------------------------
+        # Sort by relevance
+        # ----------------------------------------------------
+
+        final_results.sort(
+            key=lambda result: (
+                result.relevance
+            ),
+            reverse=True,
+        )
+
+        final_results = final_results[:top_k]
+
+        logger.info(
+            "Hybrid search completed. "
+            "Returning %d results",
+            len(final_results),
+        )
+
+        return final_results
+
+    # ========================================================
+    # DOCUMENT STATISTICS
+    # ========================================================
+
+    def get_document_stats(
+        self,
+    ) -> Dict[str, Any]:
+        """
+        Get document statistics from Azure AI Search.
+
+        Azure AI Search is used as the source of truth for
+        document/chunk statistics because the same chunks
+        are indexed there.
+        """
+
+        try:
+            total_chunks = (
+                self.search_client.get_document_count()
+            )
+
+            documents = self.search_client.search(
                 search_text="*",
-                select=["document_name"],
+                select=[
+                    "document_name"
+                ],
                 top=1000,
             )
-            doc_names = sorted(list({doc["document_name"] for doc in results if "document_name" in doc}))
+
+            document_names = sorted(
+                {
+                    document.get(
+                        "document_name"
+                    )
+                    for document in documents
+                    if document.get(
+                        "document_name"
+                    )
+                }
+            )
+
             return {
-                "total_documents": len(doc_names),
-                "total_chunks": total_chunks,
-                "documents": doc_names,
-            }
-        except Exception as e:
-            logger.warning("Failed to get Azure Search document stats: %s", str(e))
-            return {
-                "total_documents": 0,
-                "total_chunks": 0,
-                "documents": [],
+                "total_documents": len(
+                    document_names
+                ),
+                "total_chunks": (
+                    total_chunks or 0
+                ),
+                "documents": document_names,
             }
 
-    def clear(self) -> None:
-        logger.info("Clearing Azure AI Search index documents")
-        try:
-            results = self.search_client.search(search_text="*", select=["id"], top=1000)
-            doc_ids = [d["id"] for d in results if "id" in d]
-            if doc_ids:
-                from azure_services.search_service import delete_documents
+        except Exception:
+            logger.exception(
+                "Failed to retrieve document statistics"
+            )
+            raise
 
-                delete_documents(self.search_client, doc_ids)
-                logger.info("Deleted %d document chunks from Azure AI Search", len(doc_ids))
-        except Exception as e:
-            logger.exception("Failed to clear Azure AI Search index: %s", str(e))
+    # ========================================================
+    # CLEAR
+    # ========================================================
 
+    def clear(self):
+        """
+        Clear operation is intentionally not implemented.
+
+        Deleting Azure AI Search and Qdrant data should be
+        performed explicitly to avoid accidental data loss.
+        """
+
+        logger.warning(
+            "Clear operation is not implemented "
+            "for the hybrid provider."
+        )
+
+
+# ============================================================
+# PROVIDER REGISTRY
+# ============================================================
 
 class ProviderRegistry:
     """
-    Central Dependency Injection Registry for RAG providers.
-    Automatically detects configured Azure credentials and provides Azure services.
+    Central registry for embedding and vector store providers.
+
+    Keeps a singleton-like provider instance so the rest of
+    the application can use the same providers.
     """
 
-    _embedding_provider: Optional[AbstractEmbeddingProvider] = None
-    _vector_store_provider: Optional[AbstractVectorStoreProvider] = None
-    _llm_provider: Optional[AbstractLLMProvider] = None
+    _embedding = None
+    _vector = None
 
     @classmethod
-    def get_embedding_provider(cls) -> AbstractEmbeddingProvider:
-        if cls._embedding_provider is None:
-            import os
-            if os.getenv("AZURE_OPENAI_ENDPOINT") and os.getenv("AZURE_OPENAI_API_KEY"):
-                try:
-                    logger.info("Initializing AzureOpenAIEmbeddingProvider")
-                    cls._embedding_provider = AzureOpenAIEmbeddingProvider()
-                except Exception as e:
-                    logger.warning("Failed to initialize AzureOpenAIEmbeddingProvider, falling back to Mock: %s", str(e))
-                    cls._embedding_provider = MockEmbeddingProvider()
-            else:
-                cls._embedding_provider = MockEmbeddingProvider()
-        return cls._embedding_provider
+    def get_embedding_provider(
+        cls,
+    ) -> AbstractEmbeddingProvider:
+        """
+        Return the configured embedding provider.
+        """
+
+        if cls._embedding is None:
+
+            cls._embedding = (
+                AzureOpenAIEmbeddingProvider()
+            )
+
+        return cls._embedding
 
     @classmethod
-    def set_embedding_provider(cls, provider: AbstractEmbeddingProvider) -> None:
-        if not isinstance(provider, AbstractEmbeddingProvider):
-            raise TypeError("Provider must implement AbstractEmbeddingProvider interface.")
-        logger.info("Registering custom EmbeddingProvider: %s", provider.__class__.__name__)
-        cls._embedding_provider = provider
+    def get_vector_store_provider(
+        cls,
+    ) -> AbstractVectorStoreProvider:
+        """
+        Return the configured hybrid vector store provider.
+        """
 
-    @classmethod
-    def get_vector_store_provider(cls) -> AbstractVectorStoreProvider:
-        if cls._vector_store_provider is None:
-            import os
-            if os.getenv("AZURE_SEARCH_ENDPOINT") and os.getenv("AZURE_SEARCH_API_KEY"):
-                try:
-                    logger.info("Initializing AzureAISearchVectorStoreProvider")
-                    cls._vector_store_provider = AzureAISearchVectorStoreProvider(
-                        embedding_provider=cls.get_embedding_provider()
-                    )
-                except Exception as e:
-                    logger.warning("Failed to initialize AzureAISearchVectorStoreProvider, falling back to Mock: %s", str(e))
-                    cls._vector_store_provider = MockVectorStoreProvider(cls.get_embedding_provider())
-            else:
-                cls._vector_store_provider = MockVectorStoreProvider(cls.get_embedding_provider())
-        return cls._vector_store_provider
+        if cls._vector is None:
 
-    @classmethod
-    def set_vector_store_provider(cls, provider: AbstractVectorStoreProvider) -> None:
-        if not isinstance(provider, AbstractVectorStoreProvider):
-            raise TypeError("Provider must implement AbstractVectorStoreProvider interface.")
-        logger.info("Registering custom VectorStoreProvider: %s", provider.__class__.__name__)
-        cls._vector_store_provider = provider
+            cls._vector = (
+                AzureQdrantVectorStoreProvider(
+                    cls.get_embedding_provider()
+                )
+            )
 
-    @classmethod
-    def get_llm_provider(cls) -> AbstractLLMProvider:
-        if cls._llm_provider is None:
-            import os
-            if os.getenv("AZURE_OPENAI_ENDPOINT") and os.getenv("AZURE_OPENAI_API_KEY"):
-                try:
-                    from rag.rag import AzureOpenAILLMProvider
-                    logger.info("Initializing AzureOpenAILLMProvider")
-                    cls._llm_provider = AzureOpenAILLMProvider()
-                except Exception as e:
-                    from rag.rag import MockLLMProvider
-                    logger.warning("Failed to initialize AzureOpenAILLMProvider, falling back to Mock: %s", str(e))
-                    cls._llm_provider = MockLLMProvider()
-            else:
-                from rag.rag import MockLLMProvider
-                cls._llm_provider = MockLLMProvider()
-        return cls._llm_provider
+        return cls._vector
 
-    @classmethod
-    def set_llm_provider(cls, provider: AbstractLLMProvider) -> None:
-        if not isinstance(provider, AbstractLLMProvider):
-            raise TypeError("Provider must implement AbstractLLMProvider interface.")
-        logger.info("Registering custom LLMProvider: %s", provider.__class__.__name__)
-        cls._llm_provider = provider
+# ============================================================
+# CONVENIENCE RETRIEVAL FUNCTION
+# ============================================================
 
-    @classmethod
-    def reset_defaults(cls) -> None:
-        logger.info("Resetting ProviderRegistry to default providers")
-        cls._embedding_provider = None
-        cls._vector_store_provider = None
-        cls._llm_provider = None
+def retrieve_documents(
+    query: str,
+    top_k: int = 3,
+) -> List[Dict[str, Any]]:
+    """
+    Compatibility function used by RAGPipeline.
+    """
 
+    if not query or not query.strip():
+        return []
+
+    provider = ProviderRegistry.get_vector_store_provider()
+
+    results = provider.search(
+        query=query.strip(),
+        top_k=top_k,
+    )
+
+    return [
+        {
+            "chunk_id": result.chunk_id,
+            "content": result.text,
+            "text": result.text,
+            "document": result.document_name,
+            "document_name": result.document_name,
+            "page": result.page_number,
+            "page_number": result.page_number,
+            "relevance": result.relevance,
+            "score": result.relevance,
+            "metadata": result.metadata,
+        }
+        for result in results
+    ]
