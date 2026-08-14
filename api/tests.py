@@ -95,10 +95,13 @@ class APIEndpointsTestCase(APITestCase):
                 response.data['sources'] == []
                 or 'not' in answer.lower()
                 or 'cannot' in answer.lower()
+                or 'sorry' in answer.lower()
+                or 'only help' in answer.lower()
                 or 'no ' in answer.lower()
                 or answer == FALLBACK_RESPONSE_TEXT,
                 f"Expected fallback or 'not enough info' answer for: {q}, got: {answer}"
             )
+
 
     @override_settings(RAG_MIN_RELEVANCE_SCORE=1.01)
     def test_chat_endpoint_threshold_override(self):
@@ -184,3 +187,21 @@ class APIEndpointsTestCase(APITestCase):
         # Page exceeding total page count
         r_exceed = self.client.get(url + '?page=999')
         self.assertEqual(r_exceed.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_chat_endpoint_with_conversation_history(self):
+        url = reverse('api-chat')
+        payload = {
+            "question": "Does it cover accidental damage?",
+            "conversation_history": [
+                {"role": "user", "content": "What does the warranty cover?"},
+                {"role": "assistant", "content": "The warranty covers manufacturing defects."}
+            ]
+        }
+        response = self.client.post(url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('answer', response.data)
+        self.assertIn('sources', response.data)
+        if response.data['sources']:
+            source_docs = [s['document'] for s in response.data['sources']]
+            self.assertIn('warranty_policy.pdf', source_docs)
+

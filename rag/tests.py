@@ -211,10 +211,13 @@ class RAGPipelineTestCase(TestCase):
                     result["sources"] == []
                     or 'not' in answer.lower()
                     or 'cannot' in answer.lower()
+                    or 'sorry' in answer.lower()
+                    or 'only help' in answer.lower()
                     or 'no ' in answer.lower()
                     or answer == FALLBACK_RESPONSE_TEXT,
                     f"Expected fallback or 'not enough info' for: {q}, got: {answer}"
                 )
+
 
     @override_settings(RAG_MIN_RELEVANCE_SCORE=1.01)
     def test_dynamic_threshold_override(self):
@@ -343,3 +346,73 @@ class EvidenceSelectionTestCase(TestCase):
         source_docs = [s["document"] for s in sources]
         self.assertIn("shipping_policy.pdf", source_docs)
         self.assertNotIn("warranty_policy.pdf", source_docs)
+
+
+class MultiTurnConversationTestCase(TestCase):
+    """Test multi-turn conversation context resolution, topic switches, and out-of-scope handling."""
+
+    def setUp(self):
+        ProviderRegistry.reset_defaults()
+        self.mock_store = MockVectorStoreProvider()
+        self.mock_store.index_chunks([
+            DocumentChunk("w1", "The warranty covers manufacturing defects for 2 years. Accidental damage is not covered.", "warranty_policy.pdf", 1),
+            DocumentChunk("r1", "Products can be returned within 30 days of purchase. Return policy applies to defective items.", "returns_refunds.pdf", 1),
+            DocumentChunk("s1", "Standard shipping takes 3-5 days. Express shipping takes 1-2 business days.", "shipping_policy.pdf", 1),
+            DocumentChunk("a1", "You can update your account settings and profile in your account dashboard.", "account_management.pdf", 1),
+        ])
+        self.pipeline = RAGPipeline(
+            vector_store_provider=self.mock_store,
+            llm_provider=MockLLMProvider(),
+            min_relevance_score=0.50,
+        )
+
+    def tearDown(self):
+        ProviderRegistry.reset_defaults()
+
+    def test_pronoun_reference_resolution(self):
+        history = [
+            {"role": "user", "content": "What does the warranty cover?"},
+            {"role": "assistant", "content": "The warranty covers manufacturing defects."}
+        ]
+        res = self.pipeline.ask("Does it cover accidental damage?", conversation_history=history)
+        source_docs = [s["document"] for s in res["sources"]]
+        self.assertIn("warranty_policy.pdf", source_docs)
+        self.assertIn("accidental damage", res["answer"].lower())
+
+    def test_that_reference_resolution(self):
+        history = [
+            {"role": "user", "content": "What is the return policy?"},
+            {"role": "assistant", "content": "Products can be returned within 30 days."}
+        ]
+        res = self.pipeline.ask("Does that apply to defective products?", conversation_history=history)
+        source_docs = [s["document"] for s in res["sources"]]
+        self.assertIn("returns_refunds.pdf", source_docs)
+
+    def test_followup_question(self):
+        history = [
+            {"role": "user", "content": "How long does shipping take?"},
+            {"role": "assistant", "content": "Standard shipping takes 3-5 days."}
+        ]
+        res = self.pipeline.ask("What about express shipping?", conversation_history=history)
+        source_docs = [s["document"] for s in res["sources"]]
+        self.assertIn("shipping_policy.pdf", source_docs)
+
+    def test_topic_switch(self):
+        history = [
+            {"role": "user", "content": "What does the warranty cover?"},
+            {"role": "assistant", "content": "The warranty covers manufacturing defects."}
+        ]
+        res = self.pipeline.ask("How do I manage my account?", conversation_history=history)
+        source_docs = [s["document"] for s in res["sources"]]
+        self.assertIn("account_management.pdf", source_docs)
+        self.assertNotIn("warranty_policy.pdf", source_docs)
+
+    def test_irrelevant_topic_with_history(self):
+        history = [
+            {"role": "user", "content": "What does the warranty cover?"},
+            {"role": "assistant", "content": "The warranty covers manufacturing defects."}
+        ]
+        res = self.pipeline.ask("What is the capital of France?", conversation_history=history)
+        self.assertEqual(res["sources"], [])
+        self.assertIn("dedicated customer support assistant", res["answer"])
+

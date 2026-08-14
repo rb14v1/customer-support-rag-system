@@ -1,4 +1,5 @@
 import React from 'react';
+import ReactMarkdown from 'react-markdown';
 import { getDocumentSourceUrl } from '../services/api';
 
 /**
@@ -15,7 +16,7 @@ export default function Message({ message }) {
     return 'N/A';
   };
 
-  const truncateExcerpt = (text, maxLength = 120) => {
+  const truncateExcerpt = (text, maxLength = 140) => {
     if (!text) return '';
     const cleanText = text.replace(/\s+/g, ' ').trim();
     if (cleanText.length <= maxLength) return cleanText;
@@ -40,9 +41,15 @@ export default function Message({ message }) {
         </div>
 
         <div className="message-text">
-          {message.text.split('\n').map((paragraph, idx) => (
-            <p key={idx}>{paragraph}</p>
-          ))}
+          <ReactMarkdown
+            components={{
+              a: ({ node, ...props }) => (
+                <a target="_blank" rel="noopener noreferrer" {...props} />
+              ),
+            }}
+          >
+            {message.text}
+          </ReactMarkdown>
         </div>
 
         {/* Display Retrieved Context Sources */}

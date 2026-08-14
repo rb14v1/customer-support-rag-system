@@ -45,15 +45,21 @@ export default function Chat({ onHealthCheck }) {
       timestamp: getCurrentTime(),
     };
 
+    // 2. Build conversation history from existing messages
+    const conversationHistory = messages.map((m) => ({
+      role: m.sender === 'user' ? 'user' : 'assistant',
+      content: m.text,
+    }));
+
     setMessages((prev) => [...prev, userMsg]);
     if (!textToSend) setInputQuestion('');
     setIsLoading(true);
 
     try {
-      // 2. Call Django API POST /api/chat/
-      const data = await sendChatMessage(trimmedQuestion);
+      // 3. Call Django API POST /api/chat/ with question + conversationHistory
+      const data = await sendChatMessage(trimmedQuestion, conversationHistory);
 
-      // 3. Append assistant response
+      // 4. Append assistant response
       const assistantMsg = {
         id: (Date.now() + 1).toString(),
         sender: 'assistant',
@@ -63,6 +69,7 @@ export default function Chat({ onHealthCheck }) {
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
+
     } catch (err) {
       setError(err.message || 'An unexpected error occurred while communicating with the backend.');
     } finally {

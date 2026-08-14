@@ -232,9 +232,18 @@ DEFAULT_TOP_K = int(
 RAG_MIN_RELEVANCE_SCORE = float(
     os.getenv(
         "RAG_MIN_RELEVANCE_SCORE",
-        "0.30",
+        "0.55",
     )
 )
+
+RAG_MIN_QDRANT_SCORE = float(
+    os.getenv(
+        "RAG_MIN_QDRANT_SCORE",
+        "0.55",
+    )
+)
+
+
 
 
 # ============================================================

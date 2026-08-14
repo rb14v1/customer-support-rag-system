@@ -79,22 +79,25 @@ export async function ingestDocuments(dataDir = null) {
   });
 }
 
-/**
- * Send customer question to primary chat endpoint.
- * POST /api/chat/
- * Payload: { "question": "..." }
- * Response: { "answer": "...", "sources": [...] }
- */
-export async function sendChatMessage(question) {
+export async function sendChatMessage(question, conversationHistory = []) {
   if (!question || !question.trim()) {
     throw new Error('Please provide a non-empty question.');
   }
 
+  const payload = {
+    question: question.trim(),
+  };
+
+  if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
+    payload.conversation_history = conversationHistory;
+  }
+
   return request('/api/chat/', {
     method: 'POST',
-    body: JSON.stringify({ question: question.trim() }),
+    body: JSON.stringify(payload),
   });
 }
+
 
 /**
  * Constructs the source document URL for a cited PDF document opening to the specified page number.

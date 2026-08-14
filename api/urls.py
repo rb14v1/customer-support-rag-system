@@ -16,5 +16,7 @@ urlpatterns = [
     path('ingest/', DocumentIngestView.as_view(), name='api-ingest'),
     path('documents/', DocumentListView.as_view(), name='api-documents'),
     path('documents/<str:document_name>/source/', DocumentSourceView.as_view(), name='api-document-source'),
+    path('documents/<str:document_name>', DocumentSourceView.as_view(), name='api-document-direct'),
     path('chat/', ChatView.as_view(), name='api-chat'),
 ]
+
