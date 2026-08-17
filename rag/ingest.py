@@ -25,6 +25,7 @@ class PDFExtractor:
         [{"page_number": 1, "text": "..."}, ...]
         """
         path = Path(pdf_path)
+        logger.info("Starting extract_pages for PDF path: %s", path)
         if not path.is_file():
             logger.error("PDF file not found at path: %s", path)
             raise FileNotFoundError(f"PDF file not found: {path}")
@@ -48,6 +49,8 @@ class PDFExtractor:
         except Exception as e:
             logger.exception("Unexpected error extracting PDF file %s: %s", path.name, str(e))
             raise RuntimeError(f"Unexpected error reading PDF file {path.name}: {str(e)}") from e
+        finally:
+            logger.info("Finished extract_pages for PDF path: %s", path)
 
         return pages
 
@@ -56,58 +59,72 @@ class DocumentChunker:
     """Splits document page text into smaller overlapping text chunks."""
 
     def __init__(self, chunk_size: int = 700, chunk_overlap: int = 100):
-        if chunk_size <= 0:
-            raise ValueError("chunk_size must be a positive integer.")
-        if chunk_overlap < 0 or chunk_overlap >= chunk_size:
-            raise ValueError("chunk_overlap must be non-negative and less than chunk_size.")
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
+        logger.info("Starting DocumentChunker initialization (chunk_size=%s, chunk_overlap=%s)", chunk_size, chunk_overlap)
+        try:
+            if chunk_size <= 0:
+                raise ValueError("chunk_size must be a positive integer.")
+            if chunk_overlap < 0 or chunk_overlap >= chunk_size:
+                raise ValueError("chunk_overlap must be non-negative and less than chunk_size.")
+            self.chunk_size = chunk_size
+            self.chunk_overlap = chunk_overlap
+            logger.info("Finished DocumentChunker initialization")
+        except Exception:
+            logger.exception("Failed to initialize DocumentChunker (chunk_size=%s, chunk_overlap=%s)", chunk_size, chunk_overlap)
+            raise
 
     def chunk_page(self, document_name: str, page_number: int, page_text: str) -> List[DocumentChunk]:
-        if not page_text or not page_text.strip():
-            return []
+        logger.info("Starting chunk_page for doc: %s, page: %d", document_name, page_number)
+        try:
+            if not page_text or not page_text.strip():
+                logger.info("Finished chunk_page for doc: %s, page: %d (empty page_text)", document_name, page_number)
+                return []
 
-        chunks: List[DocumentChunk] = []
-        start = 0
-        text_len = len(page_text)
-        chunk_idx = 1
+            chunks: List[DocumentChunk] = []
+            start = 0
+            text_len = len(page_text)
+            chunk_idx = 1
 
-        step = max(1, self.chunk_size - self.chunk_overlap)
+            step = max(1, self.chunk_size - self.chunk_overlap)
 
-        while start < text_len:
-            end = start + self.chunk_size
-            chunk_text = page_text[start:end].strip()
+            while start < text_len:
+                end = start + self.chunk_size
+                chunk_text = page_text[start:end].strip()
 
-            if chunk_text:
-                chunk_id = str(
-                    uuid.uuid5(
-                        uuid.NAMESPACE_URL,
-                        f"{document_name}_p{page_number}_c{chunk_idx}"
+                if chunk_text:
+                    chunk_id = str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"{document_name}_p{page_number}_c{chunk_idx}"
+                        )
                     )
-                )
 
-                chunks.append(
-                    DocumentChunk(
-                        chunk_id=chunk_id,
-                        text=chunk_text,
-                        document_name=document_name,
-                        page_number=page_number,
-                        metadata={
-                            "char_length": len(chunk_text),
-                            "chunk_index": chunk_idx,
-                            "original_chunk_id": (
-                                f"{document_name}_p{page_number}_c{chunk_idx}"
-                            ),
-                        },
+                    chunks.append(
+                        DocumentChunk(
+                            chunk_id=chunk_id,
+                            text=chunk_text,
+                            document_name=document_name,
+                            page_number=page_number,
+                            metadata={
+                                "char_length": len(chunk_text),
+                                "chunk_index": chunk_idx,
+                                "original_chunk_id": (
+                                    f"{document_name}_p{page_number}_c{chunk_idx}"
+                                ),
+                            },
+                        )
                     )
-                )
-                chunk_idx += 1
+                    chunk_idx += 1
 
-            start += step
+                start += step
 
-        return chunks
+            logger.info("Finished chunk_page for doc: %s, page: %d, produced %d chunks", document_name, page_number, len(chunks))
+            return chunks
+        except Exception as e:
+            logger.exception("Failed to chunk page %d of document %s: %s", page_number, document_name, str(e))
+            raise RuntimeError(f"Failed to chunk page {page_number} of document {document_name}: {str(e)}") from e
 
     def chunk_document(self, document_name: str, pages: List[Dict[str, Any]]) -> List[DocumentChunk]:
+        logger.info("Starting chunk_document for doc: %s", document_name)
         all_chunks: List[DocumentChunk] = []
         try:
             for p in pages:
@@ -121,6 +138,9 @@ class DocumentChunker:
         except Exception as e:
             logger.exception("Error chunking document %s: %s", document_name, str(e))
             raise RuntimeError(f"Error chunking document {document_name}: {str(e)}") from e
+        finally:
+            logger.info("Finished chunk_document for doc: %s", document_name)
+
         return all_chunks
 
 
@@ -133,18 +153,32 @@ class IngestionPipeline:
         chunk_size: int = 500,
         chunk_overlap: int = 50,
     ):
-        self._vector_store = vector_store_provider
-        self.chunker = DocumentChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        logger.info("Starting IngestionPipeline initialization")
+        try:
+            self._vector_store = vector_store_provider
+            self.chunker = DocumentChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            logger.info("Finished IngestionPipeline initialization")
+        except Exception:
+            logger.exception("Failed to initialize IngestionPipeline")
+            raise
 
     @property
     def vector_store(self) -> AbstractVectorStoreProvider:
-        if self._vector_store is not None:
-            return self._vector_store
-        return ProviderRegistry.get_vector_store_provider()
+        logger.debug("Starting vector_store resolution in IngestionPipeline")
+        try:
+            if self._vector_store is not None:
+                logger.debug("Finished vector_store resolution in IngestionPipeline (explicit)")
+                return self._vector_store
+            res = ProviderRegistry.get_vector_store_provider()
+            logger.debug("Finished vector_store resolution in IngestionPipeline (registry)")
+            return res
+        except Exception:
+            logger.exception("Failed to resolve vector store provider in IngestionPipeline")
+            raise
 
     def ingest_pdf(self, pdf_path: Union[str, Path]) -> List[DocumentChunk]:
         path = Path(pdf_path)
-        logger.info("Starting ingestion of PDF: %s", path.name)
+        logger.info("Starting ingest_pdf of PDF: %s", path.name)
         try:
             if os.getenv("AZURE_STORAGE_CONNECTION_STRING"):
                 try:
@@ -168,9 +202,12 @@ class IngestionPipeline:
         except Exception as e:
             logger.error("Ingestion failed for PDF %s: %s", path.name, str(e))
             raise
+        finally:
+            logger.info("Finished ingest_pdf for PDF: %s", path.name)
 
     def ingest_directory(self, data_dir: Union[str, Path]) -> Dict[str, Any]:
         target_dir = Path(data_dir)
+        logger.info("Starting ingest_directory for path: %s", target_dir)
         if not target_dir.is_dir():
             logger.error("Target ingestion directory not found: %s", target_dir)
             raise FileNotFoundError(f"Directory not found: {target_dir}")
@@ -179,18 +216,21 @@ class IngestionPipeline:
         logger.info("Found %d PDF file(s) in %s for ingestion", len(pdf_files), target_dir)
         processed_docs: List[str] = []
 
-        for pdf_path in pdf_files:
-            try:
-                self.ingest_pdf(pdf_path)
-                processed_docs.append(pdf_path.name)
-            except Exception as e:
-                logger.warning("Skipping failed PDF %s during batch ingestion: %s", pdf_path.name, str(e))
+        try:
+            for pdf_path in pdf_files:
+                try:
+                    self.ingest_pdf(pdf_path)
+                    processed_docs.append(pdf_path.name)
+                except Exception as e:
+                    logger.warning("Skipping failed PDF %s during batch ingestion: %s", pdf_path.name, str(e))
 
-        stats = self.vector_store.get_document_stats()
-        logger.info("Batch ingestion finished. Processed %d documents. Vector store stats: %s", len(processed_docs), stats)
+            stats = self.vector_store.get_document_stats()
+            logger.info("Batch ingestion finished. Processed %d documents. Vector store stats: %s", len(processed_docs), stats)
 
-        return {
-            "documents_processed": len(processed_docs),
-            "total_chunks": stats.get("total_chunks", 0),
-            "documents": processed_docs,
-        }
+            return {
+                "documents_processed": len(processed_docs),
+                "total_chunks": stats.get("total_chunks", 0),
+                "documents": processed_docs,
+            }
+        finally:
+            logger.info("Finished ingest_directory for path: %s", target_dir)

@@ -40,14 +40,19 @@ def get_data_directory():
     Uses DATA_DIR from Django settings if available.
     Otherwise defaults to <project_root>/data.
     """
-
-    return Path(
-        getattr(
-            settings,
-            "DATA_DIR",
-            Path(settings.BASE_DIR) / "data",
+    try:
+        data_dir = Path(
+            getattr(
+                settings,
+                "DATA_DIR",
+                Path(settings.BASE_DIR) / "data",
+            )
         )
-    )
+        logger.debug("Resolved data directory: %s", data_dir)
+        return data_dir
+    except Exception:
+        logger.exception("Failed to resolve data directory")
+        return Path(getattr(settings, "BASE_DIR", ".")) / "data"
 
 
 def get_vector_store():
@@ -56,8 +61,11 @@ def get_vector_store():
 
     The actual provider is resolved through ProviderRegistry.
     """
-
-    return ProviderRegistry.get_vector_store_provider()
+    try:
+        return ProviderRegistry.get_vector_store_provider()
+    except Exception:
+        logger.exception("Failed to get vector store provider from ProviderRegistry")
+        raise
 
 
 def get_vector_store_stats():
