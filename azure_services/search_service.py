@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 def ensure_search_index(endpoint, key, index_name, embedding_dim=1536):
     """Ensure Azure AI Search index exists with proper vector and text schema."""
+    logger.info("Starting ensure_search_index for index '%s'", index_name)
     try:
-        logger.info("Ensuring Azure AI Search index '%s' exists", index_name)
         index_client = SearchIndexClient(
             endpoint=endpoint,
             credential=AzureKeyCredential(key),
@@ -28,6 +28,7 @@ def ensure_search_index(endpoint, key, index_name, embedding_dim=1536):
         existing_indexes = [i.name for i in index_client.list_indexes()]
         if index_name in existing_indexes:
             logger.info("Index '%s' already exists in Azure AI Search.", index_name)
+            logger.info("Finished ensure_search_index (already exists)")
             return
 
         fields = [
@@ -56,7 +57,7 @@ def ensure_search_index(endpoint, key, index_name, embedding_dim=1536):
 
         index = SearchIndex(name=index_name, fields=fields, vector_search=vector_search)
         index_client.create_or_update_index(index)
-        logger.info("Azure AI Search index '%s' created successfully", index_name)
+        logger.info("Finished ensure_search_index successfully for index '%s'", index_name)
     except Exception:
         logger.exception("Failed to create or update Azure AI Search index '%s'", index_name)
         raise
@@ -64,18 +65,14 @@ def ensure_search_index(endpoint, key, index_name, embedding_dim=1536):
 
 def upload_documents(search_client, documents):
     """Upload documents to Azure AI Search."""
+    logger.info("Starting upload_documents (%d documents)", len(documents) if documents else 0)
     try:
-        logger.info(
-            "Uploading %d documents to Azure AI Search",
-            len(documents),
-        )
-
         result = search_client.upload_documents(
             documents=documents
         )
 
         logger.info(
-            "Documents uploaded successfully"
+            "Finished upload_documents successfully"
         )
 
         return result
@@ -89,12 +86,8 @@ def upload_documents(search_client, documents):
 
 def search_documents(search_client, query, query_vector=None, top=5):
     """Search Azure AI Search for relevant documents using hybrid or text search."""
+    logger.info("Starting search_documents for query: '%s'", query)
     try:
-        logger.info(
-            "Searching Azure AI Search for query: %s",
-            query,
-        )
-
         vector_queries = []
         if query_vector is not None:
             vector_queries.append(
@@ -114,7 +107,7 @@ def search_documents(search_client, query, query_vector=None, top=5):
         documents = list(results)
 
         logger.info(
-            "Retrieved %d documents",
+            "Finished search_documents successfully (retrieved %d documents)",
             len(documents),
         )
 
@@ -129,12 +122,8 @@ def search_documents(search_client, query, query_vector=None, top=5):
 
 def delete_documents(search_client, document_ids):
     """Delete documents from Azure AI Search."""
+    logger.info("Starting delete_documents (%d document IDs)", len(document_ids) if document_ids else 0)
     try:
-        logger.info(
-            "Deleting %d documents",
-            len(document_ids),
-        )
-
         documents = [
             {
                 "@search.action": "delete",
@@ -148,7 +137,7 @@ def delete_documents(search_client, document_ids):
         )
 
         logger.info(
-            "Documents deleted successfully"
+            "Finished delete_documents successfully"
         )
 
         return result

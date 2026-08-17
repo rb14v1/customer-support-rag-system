@@ -5,13 +5,8 @@ logger = logging.getLogger(__name__)
 
 def upload_blob(container_client, file_path, blob_name):
     """Upload a file to Azure Blob Storage."""
+    logger.info("Starting upload_blob for file '%s' as blob '%s'", file_path, blob_name)
     try:
-        logger.info(
-            "Uploading '%s' as blob '%s'",
-            file_path,
-            blob_name,
-        )
-
         with open(file_path, "rb") as data:
             container_client.upload_blob(
                 name=blob_name,
@@ -20,7 +15,7 @@ def upload_blob(container_client, file_path, blob_name):
             )
 
         logger.info(
-            "Blob '%s' uploaded successfully",
+            "Finished upload_blob successfully for blob '%s'",
             blob_name,
         )
 
@@ -41,13 +36,8 @@ def upload_blob(container_client, file_path, blob_name):
 
 def download_blob(container_client, blob_name, download_path):
     """Download a blob to a local file."""
+    logger.info("Starting download_blob for blob '%s' to '%s'", blob_name, download_path)
     try:
-        logger.info(
-            "Downloading blob '%s' to '%s'",
-            blob_name,
-            download_path,
-        )
-
         blob_client = container_client.get_blob_client(
             blob_name
         )
@@ -58,7 +48,7 @@ def download_blob(container_client, blob_name, download_path):
             )
 
         logger.info(
-            "Blob '%s' downloaded successfully",
+            "Finished download_blob successfully for blob '%s'",
             blob_name,
         )
 
@@ -72,13 +62,12 @@ def download_blob(container_client, blob_name, download_path):
 
 def list_blobs(container_client):
     """List blobs in the configured container."""
+    logger.info("Starting list_blobs")
     try:
-        logger.info("Listing blobs")
-
         blobs = list(container_client.list_blobs())
 
         logger.info(
-            "Found %d blobs",
+            "Finished list_blobs successfully (found %d blobs)",
             len(blobs),
         )
 
@@ -91,12 +80,8 @@ def list_blobs(container_client):
 
 def delete_blob(container_client, blob_name):
     """Delete a blob from Azure Blob Storage."""
+    logger.info("Starting delete_blob for blob '%s'", blob_name)
     try:
-        logger.info(
-            "Deleting blob '%s'",
-            blob_name,
-        )
-
         blob_client = container_client.get_blob_client(
             blob_name
         )
@@ -104,7 +89,7 @@ def delete_blob(container_client, blob_name):
         blob_client.delete_blob()
 
         logger.info(
-            "Blob '%s' deleted successfully",
+            "Finished delete_blob successfully for blob '%s'",
             blob_name,
         )
 

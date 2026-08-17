@@ -35,16 +35,25 @@ AZURE_STORAGE_CONTAINER_NAME = os.getenv(
 
 def get_openai_client():
     """Create and return an Azure OpenAI client."""
+    logger.info("Starting get_openai_client")
     try:
-        logger.info("Creating Azure OpenAI client")
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        api_version = os.getenv("AZURE_OPENAI_API_VERSION")
+
+        if not endpoint or not api_key:
+            logger.error("Missing required Azure OpenAI credentials (AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_API_KEY)")
+            raise ValueError("AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY must be set in environment variables.")
+
+        logger.info("Creating Azure OpenAI client for endpoint '%s'", endpoint)
 
         client = AzureOpenAI(
-            api_key=AZURE_OPENAI_API_KEY,
-            api_version=AZURE_OPENAI_API_VERSION,
-            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            api_key=api_key,
+            api_version=api_version,
+            azure_endpoint=endpoint,
         )
 
-        logger.info("Azure OpenAI client created successfully")
+        logger.info("Finished get_openai_client successfully")
         return client
 
     except Exception:
@@ -54,21 +63,28 @@ def get_openai_client():
 
 def get_search_client():
     """Create and return an Azure AI Search client."""
+    logger.info("Starting get_search_client")
     try:
+        endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
+        api_key = os.getenv("AZURE_SEARCH_API_KEY")
+        index_name = os.getenv("AZURE_SEARCH_INDEX_NAME")
+
+        if not endpoint or not api_key or not index_name:
+            logger.error("Missing required Azure AI Search configuration (AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_API_KEY, or AZURE_SEARCH_INDEX_NAME)")
+            raise ValueError("AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_API_KEY, and AZURE_SEARCH_INDEX_NAME must be set.")
+
         logger.info(
             "Creating Azure AI Search client for index '%s'",
-            AZURE_SEARCH_INDEX_NAME,
+            index_name,
         )
 
         client = SearchClient(
-            endpoint=AZURE_SEARCH_ENDPOINT,
-            index_name=AZURE_SEARCH_INDEX_NAME,
-            credential=AzureKeyCredential(
-                AZURE_SEARCH_API_KEY
-            ),
+            endpoint=endpoint,
+            index_name=index_name,
+            credential=AzureKeyCredential(api_key),
         )
 
-        logger.info("Azure AI Search client created successfully")
+        logger.info("Finished get_search_client successfully")
         return client
 
     except Exception:
@@ -78,14 +94,18 @@ def get_search_client():
 
 def get_blob_service_client():
     """Create and return an Azure Blob Storage client."""
+    logger.info("Starting get_blob_service_client")
     try:
-        logger.info("Creating Azure Blob Storage client")
+        conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        if not conn_str:
+            logger.error("Missing required AZURE_STORAGE_CONNECTION_STRING environment variable")
+            raise ValueError("AZURE_STORAGE_CONNECTION_STRING must be set in environment variables.")
 
-        client = BlobServiceClient.from_connection_string(
-            AZURE_STORAGE_CONNECTION_STRING
-        )
+        logger.info("Creating Azure Blob Storage client from connection string")
 
-        logger.info("Azure Blob Storage client created successfully")
+        client = BlobServiceClient.from_connection_string(conn_str)
+
+        logger.info("Finished get_blob_service_client successfully")
         return client
 
     except Exception:
@@ -97,19 +117,23 @@ def get_blob_service_client():
 
 def get_blob_container_client():
     """Return the Azure Blob Storage container client."""
+    logger.info("Starting get_blob_container_client")
     try:
+        container_name = os.getenv("AZURE_STORAGE_CONTAINER_NAME")
+        if not container_name:
+            logger.error("Missing required AZURE_STORAGE_CONTAINER_NAME environment variable")
+            raise ValueError("AZURE_STORAGE_CONTAINER_NAME must be set in environment variables.")
+
         logger.info(
             "Getting Blob Storage container '%s'",
-            AZURE_STORAGE_CONTAINER_NAME,
+            container_name,
         )
 
         blob_service_client = get_blob_service_client()
 
-        client = blob_service_client.get_container_client(
-            AZURE_STORAGE_CONTAINER_NAME
-        )
+        client = blob_service_client.get_container_client(container_name)
 
-        logger.info("Blob container client created successfully")
+        logger.info("Finished get_blob_container_client successfully")
         return client
 
     except Exception:
