@@ -19,5 +19,7 @@ from django.urls import path, include
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    # OIDC authentication endpoints (login, callback, logout)
+    path('oidc/', include('mozilla_django_oidc.urls')),
     path('api/', include('api.urls')),
 ]
