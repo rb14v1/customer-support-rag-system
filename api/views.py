@@ -8,8 +8,11 @@ from pathlib import Path
 import pypdf
 from django.conf import settings
 from django.http import FileResponse
+from mozilla_django_oidc.contrib.drf import OIDCAuthentication
 from rest_framework import status
+from rest_framework.authentication import SessionAuthentication
 from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -185,7 +188,11 @@ class HealthCheckView(APIView):
     GET /api/health/
 
     Returns system health and vector-store statistics.
+    Public endpoint — no authentication required.
     """
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
 
     def get(self, request):
         logger.info(
@@ -258,6 +265,9 @@ class DocumentIngestView(APIView):
         "data_dir": "path/to/data"
     }
     """
+
+    authentication_classes = [OIDCAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         logger.info(
@@ -394,6 +404,9 @@ class DocumentListView(APIView):
     Returns information about indexed documents.
     """
 
+    authentication_classes = [OIDCAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         logger.info(
             "GET /api/documents/ requested"
@@ -456,6 +469,9 @@ class ChatView(APIView):
         "sources": [...]
     }
     """
+
+    authentication_classes = [OIDCAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         logger.info(
@@ -721,6 +737,9 @@ class DocumentSourceView(APIView):
     - The resolved file must remain inside DATA_DIR.
     - Requested page number is validated.
     """
+
+    authentication_classes = [OIDCAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated]
 
     def get(
         self,

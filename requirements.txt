@@ -18,3 +18,4 @@ sqlparse==0.5.5
 threadpoolctl==3.6.0
 tzdata==2026.3
 qdrant-client
+mozilla-django-oidc
