@@ -41,6 +41,36 @@ ALLOWED_HOSTS = [
     if host.strip()
 ]
 
+# Session tokens must be stored in HttpOnly cookies, never localStorage.
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SECURE = not DEBUG  # True in production (HTTPS)
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SECURE = not DEBUG
+
+
+# ============================================================
+# OIDC / OAUTH2 (mozilla-django-oidc)
+# ============================================================
+
+OIDC_RP_CLIENT_ID = os.getenv("OIDC_RP_CLIENT_ID")
+OIDC_RP_CLIENT_SECRET = os.getenv("OIDC_RP_CLIENT_SECRET")
+
+# Signing algorithm used by the identity provider (default RS256 for Entra ID / Okta)
+OIDC_RP_SIGN_ALGO = os.getenv("OIDC_RP_SIGN_ALGO", "RS256")
+
+# Identity provider endpoints — set these via environment variables
+OIDC_OP_AUTHORIZATION_ENDPOINT = os.getenv("OIDC_OP_AUTHORIZATION_ENDPOINT")
+OIDC_OP_TOKEN_ENDPOINT = os.getenv("OIDC_OP_TOKEN_ENDPOINT")
+OIDC_OP_USER_ENDPOINT = os.getenv("OIDC_OP_USER_ENDPOINT")
+OIDC_OP_JWKS_ENDPOINT = os.getenv("OIDC_OP_JWKS_ENDPOINT")
+
+# Where to send users after a successful login / logout
+LOGIN_REDIRECT_URL = os.getenv("LOGIN_REDIRECT_URL", "/")
+LOGOUT_REDIRECT_URL = os.getenv("LOGOUT_REDIRECT_URL", "/")
+
+# Unauthenticated requests are redirected here (Django login page → triggers OIDC)
+LOGIN_URL = "/oidc/authenticate/"
+
 
 # ============================================================
 # APPLICATIONS
@@ -57,6 +87,7 @@ INSTALLED_APPS = [
     # Third-party
     "rest_framework",
     "corsheaders",
+    "mozilla_django_oidc",
 
     # Local
     "api",
@@ -320,6 +351,16 @@ QDRANT_COLLECTION_NAME = os.getenv(
 
 
 # ============================================================
+# AUTHENTICATION BACKENDS
+# ============================================================
+
+AUTHENTICATION_BACKENDS = [
+    "mozilla_django_oidc.auth.OIDCAuthenticationBackend",
+    "django.contrib.auth.backends.ModelBackend",
+]
+
+
+# ============================================================
 # DJANGO REST FRAMEWORK
 # ============================================================
 
@@ -329,6 +370,15 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_PARSER_CLASSES": [
         "rest_framework.parsers.JSONParser",
+    ],
+    # Require authentication on all API endpoints by default.
+    # Individual views can override this with AllowAny (e.g. health check).
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "mozilla_django_oidc.contrib.drf.OIDCAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
     ],
 }
 
