@@ -1,0 +1,8 @@
+# Copy this file to terraform.tfvars and fill in the values before running
+# terraform plan / terraform apply.
+
+tenant_id           = "<your-azure-tenant-id>"
+submission_id       = "<your-submission-id>"
+cost_centre         = "<your-cost-centre-code>"
+location            = "eastus"
+resource_group_name = "customer-support-system-rg"
