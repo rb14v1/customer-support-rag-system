@@ -302,6 +302,38 @@ AZURE_STORAGE_CONTAINER_NAME = os.getenv(
 
 
 # ============================================================
+# DATABASE BACKUP
+# Backups are uploaded to a SEPARATE storage account / region
+# from the primary document container to satisfy the cross-
+# region isolation requirement.  Set AZURE_BACKUP_STORAGE_-
+# CONNECTION_STRING to a storage account in a different region;
+# fall back to the primary connection string only for local dev.
+# ============================================================
+
+# Connection string for the backup storage account (different
+# region from the primary AZURE_STORAGE_CONNECTION_STRING).
+AZURE_BACKUP_STORAGE_CONNECTION_STRING = os.getenv(
+    "AZURE_BACKUP_STORAGE_CONNECTION_STRING",
+    os.getenv("AZURE_STORAGE_CONNECTION_STRING"),   # dev fallback
+)
+
+# Container inside the backup storage account that holds SQLite
+# backup blobs.
+AZURE_BACKUP_CONTAINER_NAME = os.getenv(
+    "AZURE_BACKUP_CONTAINER_NAME",
+    "db-backups",
+)
+
+# How many days of backups to keep (minimum required: 30).
+DB_BACKUP_RETENTION_DAYS = int(
+    os.getenv(
+        "DB_BACKUP_RETENTION_DAYS",
+        "30",
+    )
+)
+
+
+# ============================================================
 # QDRANT
 # ============================================================
 

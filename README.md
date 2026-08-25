@@ -1,5 +1,106 @@
 # Customer support RAG system
 
+---
+
+## Database Backup & Restore
+
+### Configuration
+
+Set the following environment variables in `.env`:
+
+| Variable | Required | Description |
+|---|---|---|
+| `AZURE_BACKUP_STORAGE_CONNECTION_STRING` | **Yes (prod)** | Connection string for the **backup** storage account (must be in a **different region** from `AZURE_STORAGE_CONNECTION_STRING`). Falls back to `AZURE_STORAGE_CONNECTION_STRING` for local dev. |
+| `AZURE_BACKUP_CONTAINER_NAME` | No | Blob container inside the backup account. Default: `db-backups`. |
+| `DB_BACKUP_RETENTION_DAYS` | No | Days of backups to retain. Minimum enforced: **30**. Default: `30`. |
+| `DB_PATH` | No | Path to the SQLite file. Default: `db.sqlite3`. |
+
+### How automated backups work
+
+`azure_services.blob_service.backup_sqlite_database()` is the backup engine.
+It:
+1. Creates a safe temporary copy of `db.sqlite3`.
+2. Uploads it to the backup container as `db.sqlite3.<YYYYMMDDTHHMMSSZ>.bak`.
+3. Deletes the temp copy from disk.
+4. Prunes blobs older than `DB_BACKUP_RETENTION_DAYS` (≥ 30).
+
+**Run a manual backup:**
+
+```python
+from azure_services.blob_service import backup_sqlite_database
+blob_name = backup_sqlite_database()
+print("Backup stored as:", blob_name)
+```
+
+**Schedule automated daily backups** (cron example):
+
+```cron
+0 2 * * * cd /app && python -c "from azure_services.blob_service import backup_sqlite_database; backup_sqlite_database()" >> /var/log/backup_db.log 2>&1
+```
+
+Or invoke from a Django management command / Azure Functions Timer Trigger.
+
+### Restore procedure
+
+> ⚠️ Stop the Django application server before restoring.
+
+**Step 1 — List available backups**
+
+```python
+from azure.storage.blob import BlobServiceClient
+import os
+
+cc = BlobServiceClient.from_connection_string(
+    os.environ["AZURE_BACKUP_STORAGE_CONNECTION_STRING"]
+).get_container_client("db-backups")
+
+for b in cc.list_blobs():
+    print(b.name, b.last_modified)
+```
+
+**Step 2 — Restore the chosen backup**
+
+```python
+from azure_services.blob_service import restore_sqlite_database
+
+restore_sqlite_database(
+    blob_name="db.sqlite3.20260801T020000Z.bak",
+    restore_path="db.sqlite3",
+)
+```
+
+**Step 3 — Verify and restart**
+
+```bash
+python manage.py check --database default
+sudo systemctl start gunicorn
+```
+
+### Point-in-time recovery (PITR)
+
+SQLite does not natively support PITR. The daily blob backup provides restore
+to any point within the 30-day retention window. For finer-grained PITR:
+
+- **Enable Azure Blob Storage versioning** on the `db-backups` container:
+  ```bash
+  az storage account blob-service-properties update \
+    --account-name <backup-storage-account> \
+    --enable-versioning true
+  ```
+- Or **migrate to PostgreSQL / Azure SQL**, both of which support native PITR
+  and are fully supported by Django.
+
+### Pre-go-live restore drill (required before launch)
+
+1. Run `backup_sqlite_database()` and note the blob name.
+2. Stop the app; rename `db.sqlite3` to `db.sqlite3.pre-restore`.
+3. Run `restore_sqlite_database(blob_name=..., restore_path="db.sqlite3")`.
+4. Run `python manage.py check --database default`.
+5. Confirm the app starts and data is intact.
+6. Record the result and date in the project runbook / incident log.
+
+---
+
 
 
 ## Getting started
