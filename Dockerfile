@@ -24,4 +24,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8000/healthz || exit 1
 
-CMD ["python", "main.py"]
+CMD ["gunicorn", "customer_support.wsgi:application", "--bind", "0.0.0.0:8000"]
