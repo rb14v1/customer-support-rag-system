@@ -19,3 +19,4 @@ threadpoolctl==3.6.0
 tzdata==2026.3
 qdrant-client
 mozilla-django-oidc
+dj-database-url>=2.0.0
