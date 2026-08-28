@@ -17,9 +17,14 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 
+from api.views import HealthCheckView
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     # OIDC authentication endpoints (login, callback, logout)
     path('oidc/', include('mozilla_django_oidc.urls')),
     path('api/', include('api.urls')),
+    # Liveness probe — required by container orchestrators and load balancers.
+    # Must be unauthenticated and at /healthz (matches Dockerfile HEALTHCHECK).
+    path('healthz', HealthCheckView.as_view(), name='healthz'),
 ]
