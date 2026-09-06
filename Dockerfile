@@ -1,29 +1,11 @@
-# syntax=docker/dockerfile:1
-FROM python:3.12-slim AS builder
-
-RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
-
-FROM python:3.12-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
-
-RUN groupadd --gid 1000 appuser && useradd --uid 1000 --gid 1000 --create-home appuser
-COPY --from=builder /install /usr/local
-WORKDIR /app
-
-COPY . .
-
-RUN chown -R appuser:appuser /app
-
-USER appuser
-
-EXPOSE 8000
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8000/healthz || exit 1
-
-CMD ["gunicorn", "customer_support.wsgi:application", "--bind", "0.0.0.0:8000"]
+# This repository uses component-specific Dockerfiles.
+# The single-component Dockerfile that previously lived here has been
+# replaced by the following per-component files:
+#
+#   API  (Django/Python) : Dockerfile.api
+#                          docker build -f Dockerfile.api .
+#
+#   Web  (React/Vite)    : frontend/Dockerfile
+#                          docker build -f frontend/Dockerfile ./frontend
+#
+# Do NOT add build instructions back to this file.
