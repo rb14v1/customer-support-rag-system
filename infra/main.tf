@@ -11,6 +11,13 @@ terraform {
 
 provider "azurerm" {
   features {}
+
+  # default_tags propagates tenantId, submissionId, and costCentre to all
+  # child resources automatically, satisfying the finops.resources_tagged
+  # compliance requirement.
+  default_tags {
+    tags = local.default_tags
+  }
 }
 
 # ---------------------------------------------------------------------------
