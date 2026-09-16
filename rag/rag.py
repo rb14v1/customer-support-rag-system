@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTS & DEFAULTS
 # ============================================================
 
-AZURE_OPENAI_CHAT_DEPLOYMENT = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-5.4-mini")
+AZURE_OPENAI_CHAT_DEPLOYMENT = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT")
 DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "3"))
 
 FALLBACK_RESPONSE_TEXT = (
@@ -218,6 +218,10 @@ class AzureOpenAILLMProvider(AbstractLLMProvider):
         try:
             self.client = get_openai_client()
             self.deployment = AZURE_OPENAI_CHAT_DEPLOYMENT
+            if not self.deployment:
+                raise ValueError(
+                    "AZURE_OPENAI_CHAT_DEPLOYMENT environment variable is not set."
+                )
             logger.info("Finished AzureOpenAILLMProvider initialization")
         except Exception:
             logger.exception("Failed to initialize AzureOpenAILLMProvider")
