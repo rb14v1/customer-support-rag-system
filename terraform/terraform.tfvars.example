@@ -6,3 +6,13 @@ submission_id       = "<your-submission-id>"
 cost_centre         = "<your-cost-centre-code>"
 location            = "eastus"
 resource_group_name = "customer-support-system-rg"
+
+# ---------------------------------------------------------------------------
+# Database Backup (rel.backup_configured)
+# backup_storage_connection_string MUST point to a storage account in a
+# DIFFERENT Azure region from the primary storage account.
+# backup_retention_days must be >= 30 (enforced by Terraform validation).
+# ---------------------------------------------------------------------------
+backup_storage_connection_string = "<connection-string-for-backup-storage-account-in-separate-region>"
+backup_container_name            = "db-backups"
+backup_retention_days            = 30
