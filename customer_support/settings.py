@@ -23,15 +23,21 @@ load_dotenv(BASE_DIR / ".env")
 # SECURITY
 # ============================================================
 
-SECRET_KEY = os.getenv(
-    "DJANGO_SECRET_KEY",
-    "django-insecure-change-this-in-production",
-)
-
 DEBUG = os.getenv(
     "DJANGO_DEBUG",
     "True",
 ).lower() == "true"
+
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
+if not SECRET_KEY:
+    if not DEBUG:
+        from django.core.exceptions import ImproperlyConfigured
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY environment variable is required in production. "
+            "Set it to a long, random string before running the application."
+        )
+    # Development-only insecure fallback — never use in production.
+    SECRET_KEY = "django-insecure-local-dev-only-do-not-use-in-production"
 
 ALLOWED_HOSTS = [
     host.strip()
