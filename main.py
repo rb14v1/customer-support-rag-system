@@ -1,8 +1,10 @@
-from fastapi import FastAPI, Depends
-from auth import authenticate
+from fastapi import FastAPI
+from config import API_KEY
 
 app = FastAPI()
 
-@app.get("/api/private")
-def private_route(user=Depends(authenticate)):
-    return {"message": "Authenticated"}
+@app.get("/config-status")
+def config_status():
+    return {
+        "api_key_configured": bool(API_KEY)
+    }
