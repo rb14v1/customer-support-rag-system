@@ -1,25 +1,25 @@
 name: Harbour Build
+
 on:
   workflow_dispatch:
   push:
-    branches: ['main']
+    branches: ["main"]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        component: ['api', 'web']
+        component: ["api", "web"]
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: azure/login@v2
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Log in to Azure Container Registry
+        run: az acr login --name ${{ secrets.ACR_NAME }}
       - name: Determine Dockerfile path
         id: dockerfile
         run: |
@@ -39,5 +39,5 @@ jobs:
           file: ${{ steps.dockerfile.outputs.path }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}:${{ matrix.component }}-latest
-            ghcr.io/${{ github.repository }}:${{ matrix.component }}-${{ github.sha }}
+            ${{ secrets.ACR_NAME }}.azurecr.io/${{ github.repository }}:${{ matrix.component }}-latest
+            ${{ secrets.ACR_NAME }}.azurecr.io/${{ github.repository }}:${{ matrix.component }}-${{ github.sha }}
