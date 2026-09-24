@@ -221,7 +221,7 @@ resource "azurerm_automation_schedule" "daily_02_utc" {
   frequency               = "Day"
   interval                = 1
   timezone                = "UTC"
-  start_time              = "2026-09-01T02:00:00+00:00"
+  start_time              = "2026-09-25T02:00:00+00:00"
   description             = "Triggers the daily SQLite database backup runbook at 02:00 UTC."
 
   lifecycle {
