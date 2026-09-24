@@ -23,10 +23,12 @@ load_dotenv(BASE_DIR / ".env")
 # SECURITY
 # ============================================================
 
-SECRET_KEY = os.getenv(
-    "DJANGO_SECRET_KEY",
-    "django-insecure-change-this-in-production",
-)
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
+if not SECRET_KEY:
+    raise ValueError(
+        "DJANGO_SECRET_KEY environment variable must be set. "
+        "Provide a strong random string in your environment or .env file."
+    )
 
 DEBUG = os.getenv(
     "DJANGO_DEBUG",
