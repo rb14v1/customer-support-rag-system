@@ -6,3 +6,13 @@ submission_id       = "<your-submission-id>"
 cost_centre         = "<your-cost-centre-code>"
 location            = "eastus"
 resource_group_name = "customer-support-system-rg"
+
+# ------------------------------------------------------------
+# Database Backup — rel.backup_configured
+# backup_storage_connection_string must point to a storage
+# account in a DIFFERENT region from the primary storage to
+# satisfy the cross-region isolation requirement.
+# ------------------------------------------------------------
+backup_storage_connection_string = "<connection-string-for-backup-storage-account-in-secondary-region>"
+backup_container_name            = "db-backups"
+backup_retention_days            = 30
