@@ -1,0 +1,25 @@
+# Trivy configuration for dependency vulnerability scanning
+# Usage: trivy fs --config trivy.yaml .
+# Docs:  https://aquasecurity.github.io/trivy/latest/docs/configuration/
+
+# Only fail on CRITICAL and HIGH severities (matches sec.no_critical_cves policy)
+severity:
+  - CRITICAL
+  - HIGH
+
+# Scan Python pip dependencies and OS packages inside container images
+scan:
+  scanners:
+    - vuln
+
+vulnerability:
+  # Scan both OS-level packages and application libraries
+  type:
+    - os
+    - library
+
+# Fail the scan if any CRITICAL or HIGH CVE is found (exit-code 1)
+exit-code: 1
+
+# Keep results quiet unless there are findings
+quiet: false
