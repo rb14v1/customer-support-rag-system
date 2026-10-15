@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        component: ["api", "web"]
+        component: ["customer-support-app", "frontend"]
     permissions:
       contents: read
     steps:
@@ -33,11 +33,15 @@ jobs:
             echo "ERROR: No Dockerfile found for ${{ matrix.component }}" >&2
             exit 1
           fi
+      - name: Lowercase the image repository
+        id: repo
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
+          build-args: ${{ matrix.component == 'frontend' && 'VITE_API_BASE_URL=https://cust-rag-afgh-customer-support-app.gentlemoss-0b143a5f.uksouth.azurecontainerapps.io' || '' }}
           context: ${{ steps.dockerfile.outputs.context }}
           file: ${{ steps.dockerfile.outputs.path }}
           push: true
           tags: |
-            ${{ secrets.ACR_NAME }}.azurecr.io/${{ github.repository }}:${{ matrix.component }}-latest
-            ${{ secrets.ACR_NAME }}.azurecr.io/${{ github.repository }}:${{ matrix.component }}-${{ github.sha }}
+            ${{ secrets.ACR_NAME }}.azurecr.io/${{ steps.repo.outputs.name }}:${{ matrix.component }}-latest
+            ${{ secrets.ACR_NAME }}.azurecr.io/${{ steps.repo.outputs.name }}:${{ matrix.component }}-${{ github.sha }}
