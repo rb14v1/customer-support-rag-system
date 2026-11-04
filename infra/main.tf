@@ -1,3 +1,4 @@
+# Serves components: customer-support-api-app, frontend
 terraform {
   required_providers {
     azurerm = {
@@ -19,89 +20,58 @@ provider "azurerm" {
 }
 
 
-resource "azurerm_search_service" "search" {
-  name                = "search-cust-rag-afgh"
-  resource_group_name = "cust-rag-afgh"
-  location            = "uksouth"
-  sku                 = "basic"
+resource "azurerm_mssql_server" "sql" {
+  tags = var.common_tags
+  name                         = "sql-customer-supp-test-10"
+  resource_group_name          = "customer-supp-test-10"
+  location                     = "uksouth"
+  version                      = "12.0"
+  administrator_login          = "sqladmin"
+  administrator_login_password = random_password.sql_admin.result
   public_network_access_enabled = false
 }
 
-resource "azurerm_private_dns_zone" "search_dns_zone" {
-  name                = "privatelink.search.windows.net"
-  resource_group_name = "cust-rag-afgh"
+resource "random_password" "sql_admin" {
+  length  = 24
+  special = true
 }
 
-resource "azurerm_private_dns_zone_virtual_network_link" "search_dns_zone_link" {
-  name                  = "link-cust-rag-afgh"
-  resource_group_name   = "cust-rag-afgh"
-  private_dns_zone_name = azurerm_private_dns_zone.search_dns_zone.name
+resource "azurerm_mssql_database" "sql" {
+  tags = var.common_tags
+  name      = "db-customer-supp-test-10"
+  server_id = azurerm_mssql_server.sql.id
+  sku_name  = "Basic"
+}
+
+data "azurerm_private_dns_zone" "sql_dns_zone" {
+  name                = "privatelink.database.windows.net"
+  resource_group_name = var.hub_resource_group
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "sql_dns_zone_link" {
+  tags = var.common_tags
+  name                  = "link-customer-supp-test-10"
+  resource_group_name   = var.hub_resource_group
+  private_dns_zone_name = data.azurerm_private_dns_zone.sql_dns_zone.name
   virtual_network_id    = var.vnet_id
 }
 
-resource "azurerm_private_endpoint" "search_pe" {
-  name                = "pe-search-cust-rag-afgh"
-  resource_group_name = "cust-rag-afgh"
+resource "azurerm_private_endpoint" "sql_pe" {
+  tags = var.common_tags
+  name                = "pe-sql-customer-supp-test-10"
+  resource_group_name = "customer-supp-test-10"
   location            = "uksouth"
   subnet_id           = var.subnet_id
 
   private_service_connection {
-    name                           = "search-privateserviceconnection"
-    private_connection_resource_id = azurerm_search_service.search.id
-    subresource_names              = ["searchService"]
+    name                           = "sql-privateserviceconnection"
+    private_connection_resource_id = azurerm_mssql_server.sql.id
+    subresource_names              = ["sqlServer"]
     is_manual_connection           = false
   }
 
   private_dns_zone_group {
-    name                 = "search-dns-zone-group"
-    private_dns_zone_ids = [azurerm_private_dns_zone.search_dns_zone.id]
+    name                 = "sql-dns-zone-group"
+    private_dns_zone_ids = [data.azurerm_private_dns_zone.sql_dns_zone.id]
   }
-}
-
-resource "azurerm_storage_account" "blob" {
-  name                     = "stcustragafgh"
-  resource_group_name      = "cust-rag-afgh"
-  location                 = "uksouth"
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
-  public_network_access_enabled = false
-}
-
-resource "azurerm_private_dns_zone" "blob_dns_zone" {
-  name                = "privatelink.blob.core.windows.net"
-  resource_group_name = "cust-rag-afgh"
-}
-
-resource "azurerm_private_dns_zone_virtual_network_link" "blob_dns_zone_link" {
-  name                  = "link-cust-rag-afgh"
-  resource_group_name   = "cust-rag-afgh"
-  private_dns_zone_name = azurerm_private_dns_zone.blob_dns_zone.name
-  virtual_network_id    = var.vnet_id
-}
-
-resource "azurerm_private_endpoint" "blob_pe" {
-  name                = "pe-blob-cust-rag-afgh"
-  resource_group_name = "cust-rag-afgh"
-  location            = "uksouth"
-  subnet_id           = var.subnet_id
-
-  private_service_connection {
-    name                           = "blob-privateserviceconnection"
-    private_connection_resource_id = azurerm_storage_account.blob.id
-    subresource_names              = ["blob"]
-    is_manual_connection           = false
-  }
-
-  private_dns_zone_group {
-    name                 = "blob-dns-zone-group"
-    private_dns_zone_ids = [azurerm_private_dns_zone.blob_dns_zone.id]
-  }
-}
-
-resource "azurerm_log_analytics_workspace" "law" {
-  name                = "law-cust-rag-afgh"
-  resource_group_name = "cust-rag-afgh"
-  location            = "uksouth"
-  sku                 = "PerGB2018"
-  retention_in_days   = 30
 }
