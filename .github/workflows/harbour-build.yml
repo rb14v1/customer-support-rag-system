@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        component: ["customer-support-app", "frontend"]
+        component: ["customer-support-api-app", "frontend"]
     permissions:
       contents: read
     steps:
@@ -38,7 +38,7 @@ jobs:
         run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
-          build-args: ${{ matrix.component == 'frontend' && 'VITE_API_BASE_URL=https://cust-rag-afgh-customer-support-app.gentlemoss-0b143a5f.uksouth.azurecontainerapps.io' || '' }}
+          build-args: ${{ matrix.component == 'frontend' && 'VITE_API_BASE_URL=https://customer-su-customer-support-api.ambitiouswater-00cab94a.uksouth.azurecontainerapps.io' || '' }}
           context: ${{ steps.dockerfile.outputs.context }}
           file: ${{ steps.dockerfile.outputs.path }}
           push: true
